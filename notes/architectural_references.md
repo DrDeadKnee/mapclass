@@ -8,13 +8,13 @@ The core architectural challenge for MapClass is that **terrain classification c
 
 **1. Recursive coarse-to-fine segmentation (preferred)**
 
-Divide the map into coarse tiles, obtain per-class probability distributions over each tile using a pre-trained backbone (e.g. SAM or CLIP ViT), then use those distributions as priors when segmenting at the next finer scale. Repeat until region-level polygons are obtained.
+Divide the map into coarse tiles, obtain per-class probability distributions over each tile using a pre-trained backbone (e.g. DINOv2 or Swin Transformer), then use those distributions as priors when segmenting at the next finer scale. Repeat until the desired resolution is reached.
 
 Why preferred:
 - Captures broad spatial context naturally through the coarse pass
 - Leverages existing pre-trained representations — no need to learn low-level features from scratch
 - Far more compute-efficient than training a large-kernel model from scratch
-- Prior comparisons between large-kernel CNNs and hierarchical/transformer approaches consistently show that hierarchical methods win under limited compute budgets, since the backbone is frozen and training signal goes entirely toward the task head
+- DINOv2 and Swin Transformer are available frozen with strong dense-prediction transfer, making the training budget go entirely toward the task heads
 
 **2. Large first-kernel ConvNet (benchmark alternative)**
 
@@ -29,12 +29,20 @@ The main concern: training a large-kernel convnet from scratch requires substant
 
 ---
 
+## Planned Experiments
+
+**Domain gap analysis — progressive backbone unfreezing**
+
+The initial model uses a fully frozen backbone. If performance on illustrated maps plateaus, a planned follow-up experiment is to progressively unfreeze layers from the top of the backbone downward (i.e. unfreeze the last block first, then the second-to-last, etc.) and track segmentation accuracy at each stage. Alongside this, attribution analysis (e.g. GradCAM or attention rollout) at each unfreezing stage will show which layers encode features relevant to illustrated-map semantics vs. natural-image features. This localises the domain gap within the network rather than treating it as monolithic.
+
+---
+
 ## Reference Reading
 
 **Coarse-to-fine / hierarchical segmentation**
 - [Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030) — hierarchical ViT with linear complexity; the dominant backbone for dense prediction tasks
 - [AerialFormer: Multi-resolution Transformer for Aerial Image Segmentation](https://arxiv.org/abs/2306.06842) — hierarchical coarse-to-fine approach benchmarked on aerial/remote sensing datasets; most directly relevant to this project
-- [Segment Anything (SAM)](https://arxiv.org/abs/2304.02643) — promptable segmentation foundation model; candidate backbone for the coarse-to-fine pipeline
+- [DINOv2: Learning Robust Visual Features without Supervision](https://arxiv.org/abs/2304.07193) — self-supervised ViT backbone; strong dense-prediction transfer with a frozen backbone, primary candidate for this project
 
 **Large-kernel CNNs**
 - [Large Kernel Matters: Improve Semantic Segmentation by Global Convolutional Network](https://arxiv.org/abs/1703.02719) — argues the case for large kernels over stacked small filters in dense prediction
