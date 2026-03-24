@@ -4,20 +4,33 @@ and download georeferenced map images as GeoTIFFs.
 
 Uses two endpoints:
   - LUNA search API: https://www.davidrumsey.com/luna/servlet/as/search
-    Returns JSON with map metadata including any WMS georeferencing URLs.
+    Returns JSON with map metadata.
   - WMS GetMap (Georeferencer): https://maps.georeferencer.com/georeferences/...
     For maps already registered in the Georeferencer service.
 
 Maps that are not yet georeferenced are written to an unregistered_manifest.json
 for manual GCP placement in QGIS.
 
-Scale filtering:
-  Maps whose spatial extent diagonal is outside [100 km, 2000 km] are excluded.
-  The Haversine formula is used to compute diagonal from the bounding box.
+Search strategy:
+  The LUNA API does not support date-range queries (Lucene syntax returns zero
+  results). We query year by year and collect a pool capped at pages_per_year
+  pages per year, then rank the pool by metadata richness and return the top
+  max_results items. This ensures even temporal and geographic distribution
+  and biases toward well-documented maps.
+
+Metadata available per item (always present unless noted):
+  Top-level: id, urlSize0–urlSize4 (JPEG image URLs), iiifManifest
+  fieldValues: Author, Date, Short Title, Full Title, Type, Obj Height cm,
+    Obj Width cm, Publisher, Publisher Location, Pub Title, Pub Type
+  Sparse (30–50% of items): Scale 1, Country, City, World Area, Region,
+    Reference, Engraver or Printer
+
+Not available: bounding boxes / coordinates, orientation/bearing.
 """
 
 import json
 import math
+import re
 import time
 from pathlib import Path
 
@@ -39,6 +52,9 @@ _BATCH_SIZE = 50
 _MAX_RETRIES = 4
 _BACKOFF_BASE = 2.0  # seconds
 
+# David Rumsey Type field values that represent actual maps (not text pages, covers, etc.)
+_MAP_TYPES = {"Atlas Map", "Separate Map", "Map", "Historical Map", "Wall Map", "Globe Map"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,10 +75,18 @@ def _bbox_diagonal_km(west, south, east, north) -> float:
 
 
 def _field(item: dict, name: str, default=None):
-    """Extract a named field from a LUNA item's fieldValues list."""
+    """
+    Extract a named field from a LUNA item's fieldValues list.
+
+    The LUNA API returns fieldValues as a list of single-key dicts:
+      [{"Date": ["1570"]}, {"Short Title": ["..."]}, ...]
+    """
     for fv in item.get("fieldValues", []):
-        if fv.get("name", "").lower() == name.lower():
-            return fv.get("value", default)
+        for key, vals in fv.items():
+            if key.lower() == name.lower():
+                if isinstance(vals, list):
+                    return vals[0] if vals else default
+                return vals if vals is not None else default
     return default
 
 
@@ -101,6 +125,39 @@ def _parse_bbox(item: dict) -> tuple[float, float, float, float] | None:
     return None
 
 
+def _richness_score(item: dict) -> int:
+    """
+    Score an item by how many useful metadata fields are populated.
+    Higher = better documented = preferred for training.
+
+    Geographic context fields are weighted highest because they tell us
+    what terrain the map depicts, which is the most operationally useful
+    information for our pipeline.
+    """
+    score = 0
+    # Geographic context — most valuable for terrain expectations
+    if _field(item, "Country"):    score += 4
+    if _field(item, "World Area"): score += 4
+    if _field(item, "City"):       score += 2  # city maps are too small-scale
+    if _field(item, "Region"):     score += 2
+    # Scale denominator — useful for ruling out city/world maps
+    if _field(item, "Scale 1"):    score += 3
+    # Attribution quality indicators
+    if _field(item, "Reference"):          score += 2
+    if _field(item, "Engraver or Printer"): score += 1
+    # Physical dimensions (filter out very small maps)
+    h = _field(item, "Obj Height cm")
+    w = _field(item, "Obj Width cm")
+    if h and w:
+        try:
+            area = float(h) * float(w)
+            if area >= 500:   score += 1   # ≥ ~A3 size
+            if area >= 1200:  score += 1   # ≥ ~A2 size
+        except ValueError:
+            pass
+    return score
+
+
 def _get_json(url: str, params: dict) -> dict:
     """GET with exponential-backoff retry on 429/503."""
     for attempt in range(_MAX_RETRIES):
@@ -112,7 +169,15 @@ def _get_json(url: str, params: dict) -> dict:
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
-            return resp.json()
+            try:
+                return resp.json()
+            except ValueError:
+                snippet = resp.text[:300] if resp.text else "(empty body)"
+                ct = resp.headers.get("Content-Type", "?")
+                raise ValueError(
+                    f"Non-JSON response [status={resp.status_code}, "
+                    f"Content-Type={ct}]: {snippet!r}"
+                )
         except requests.RequestException as exc:
             if attempt == _MAX_RETRIES - 1:
                 raise
@@ -128,39 +193,87 @@ def search_maps(
     date_start: int = _DATE_START,
     date_end: int = _DATE_END,
     max_results: int = 500,
+    pages_per_year: int = 1,
 ) -> list[dict]:
     """
     Search David Rumsey LUNA API for maps dated between date_start and date_end.
 
-    Returns a list of raw item dicts as returned by the API, unfiltered.
-    Spatial filtering (scale) is applied in download_georeferenced / emit_manifest.
+    Two-phase strategy to avoid ordering/distribution bias:
+      Phase 1 — Pool collection: query each year independently, take up to
+        pages_per_year pages per year. Each year contributes equally, so the
+        pool spans the full date range regardless of max_results.
+      Phase 2 — Richness ranking: score every pooled item by how many useful
+        metadata fields are populated, then return the top max_results.
+
+    This biases toward well-documented maps (known location, scale, author)
+    while preserving temporal and geographic diversity across the period.
+
+    pages_per_year=1 → ~50 raw results/year → ~10–15 maps/year after filtering
+    → pool of ~2000–3000 maps for 1500–1700, then rank to get max_results.
+    Increase pages_per_year for a larger pool at the cost of more API calls.
     """
-    q = f'type:Map AND date:[{date_start} TO {date_end}]'
-    items = []
-    lc = 1  # list cursor (1-based)
+    pool: dict[str, dict] = {}  # id → item
 
-    print(f"Searching David Rumsey: {q}")
-    while len(items) < max_results:
-        data = _get_json(_LUNA_SEARCH, {
-            "q": q,
-            "output": "json",
-            "bs": _BATCH_SIZE,
-            "lc": lc,
-        })
+    print(f"Collecting pool: {date_start}–{date_end}, {pages_per_year} page(s)/year")
 
-        batch = data.get("results", {}).get("items", [])
-        if not batch:
-            break
+    for year in range(date_start, date_end + 1):
+        for page in range(pages_per_year):
+            try:
+                data = _get_json(_LUNA_SEARCH, {
+                    "q": str(year),
+                    "output": "json",
+                    "bs": _BATCH_SIZE,
+                    "os": page * _BATCH_SIZE,
+                })
+            except Exception as exc:
+                print(f"  Warning: year {year} page {page} failed: {exc}")
+                break
 
-        items.extend(batch)
-        print(f"  Fetched {len(items)} maps so far…")
-        lc += _BATCH_SIZE
+            batch = data.get("results", [])
+            if not isinstance(batch, list) or not batch:
+                break
 
-        if len(batch) < _BATCH_SIZE:
-            break  # last page
+            for item in batch:
+                item_id = item.get("id", "")
+                if not item_id or item_id in pool:
+                    continue
 
-    print(f"Search complete: {len(items)} maps found")
-    return items[:max_results]
+                item_type = _field(item, "Type") or ""
+                if item_type and item_type not in _MAP_TYPES:
+                    continue
+
+                item_date = _field(item, "Date")
+                if item_date:
+                    try:
+                        if not (date_start <= int(str(item_date).strip()[:4]) <= date_end):
+                            continue
+                    except ValueError:
+                        pass
+
+                pool[item_id] = item
+
+            if len(batch) < _BATCH_SIZE:
+                break  # no more pages for this year
+
+        if year % 25 == 0:
+            print(f"  Through {year}: {len(pool)} maps in pool")
+
+    print(f"Pool complete: {len(pool)} maps. Ranking by metadata richness…")
+    ranked = sorted(pool.values(), key=_richness_score, reverse=True)
+
+    # Print richness distribution for the selected set
+    selected = ranked[:max_results]
+    scores = [_richness_score(item) for item in selected]
+    if scores:
+        print(f"  Score range in top {len(selected)}: {min(scores)}–{max(scores)}")
+        n_with_geo = sum(
+            1 for item in selected
+            if _field(item, "Country") or _field(item, "World Area") or _field(item, "City")
+        )
+        print(f"  Maps with geographic context field: {n_with_geo}/{len(selected)}")
+
+    print(f"Search complete: returning {len(selected)} maps")
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +401,24 @@ def emit_manifest(items: list[dict], output_path: Path) -> None:
             "id": item_id,
             "title": title,
             "date": date,
+            "author": _field(item, "Author"),
+            "publisher": _field(item, "Publisher"),
+            "publisher_location": _field(item, "Publisher Location"),
+            "country": _field(item, "Country"),
+            "world_area": _field(item, "World Area"),
+            "region": _field(item, "Region"),
+            "city": _field(item, "City"),
+            "scale": _field(item, "Scale 1"),
+            "obj_height_cm": _field(item, "Obj Height cm"),
+            "obj_width_cm": _field(item, "Obj Width cm"),
+            "full_title": _field(item, "Full Title"),
+            "reference": _field(item, "Reference"),
+            "richness_score": _richness_score(item),
             "scale_note": scale_note,
-            "thumbnail_url": thumb,
-            "rumsey_page": detail,
+            "thumbnail_url": item.get("urlSize0"),
+            "image_url": item.get("urlSize4"),
+            "iiif_manifest": item.get("iiifManifest"),
+            "rumsey_page": f"https://www.davidrumsey.com/luna/servlet/detail/{item_id}",
             "status": "needs_gcps",
         })
 
