@@ -11,7 +11,6 @@ Label indices match biome_mapping.py:
   Topography None = not applicable (water tiles)
 """
 
-import os
 from pathlib import Path
 
 from biome_mapping import LANDCOVER_CLASSES, TOPO_CLASSES

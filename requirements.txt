@@ -3,7 +3,7 @@ numpy
 rasterio
 pyproj
 requests
-torch
+torch --index-url https://download.pytorch.org/whl/cpu
 transformers>=4.41
 peft>=0.10
 accelerate

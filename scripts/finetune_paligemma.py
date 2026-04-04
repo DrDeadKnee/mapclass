@@ -145,11 +145,11 @@ class ToonDataset(Dataset):
         image, prompt, answer = self.samples[idx]
         inputs = self.processor(
             images=image,
-            text=prompt,
+            text="<image>" + prompt,
             suffix=answer,
             return_tensors="pt",
             padding="max_length",
-            max_length=256,
+            max_length=512,
             truncation=True,
         )
         # Remove batch dimension added by processor
@@ -175,7 +175,7 @@ def apply_lora(model: PaliGemmaForConditionalGeneration, rank: int, alpha: int) 
     from peft import LoraConfig, get_peft_model
 
     # Step 1: freeze language model base weights
-    model.language_model.requires_grad_(False)
+    model.model.language_model.requires_grad_(False)
 
     # Step 2: wrap model with LoRA
     lora_config = LoraConfig(
@@ -193,7 +193,7 @@ def apply_lora(model: PaliGemmaForConditionalGeneration, rank: int, alpha: int) 
             param.requires_grad_(False)
 
     # Multi-modal projector stays trainable (bridges vision → language token space)
-    for param in peft_model.base_model.model.multi_modal_projector.parameters():
+    for param in peft_model.base_model.model.model.multi_modal_projector.parameters():
         param.requires_grad_(True)
 
     trainable = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)

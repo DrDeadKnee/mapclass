@@ -30,7 +30,6 @@ Not available: bounding boxes / coordinates, orientation/bearing.
 
 import json
 import math
-import re
 import time
 from pathlib import Path
 

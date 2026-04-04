@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from biome_mapping import LANDCOVER_CLASSES, h_to_landcover
+from biome_mapping import h_to_landcover
 
 # ---------------------------------------------------------------------------
 # Palette: canonical land cover index → RGB for each style
