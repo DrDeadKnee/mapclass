@@ -1,0 +1,4 @@
+services:
+  trainer:
+    build: .
+    image: northamerica-northeast1-docker.pkg.dev/narrative-strategy-campaign/mapclass/paligemma-trainer:latest
