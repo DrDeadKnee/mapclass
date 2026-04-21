@@ -128,7 +128,7 @@ gcloud compute instances create "${VM_NAME}" \
   --machine-type="${MACHINE_TYPE}" \
   --accelerator="type=${GPU_TYPE},count=1" \
   --maintenance-policy=TERMINATE \
-  --image-family=pytorch-latest-gpu \
+  --image-family=pytorch-2-9-cu129-ubuntu-2404-nvidia-580 \
   --image-project=deeplearning-platform-release \
   --boot-disk-size=100GB \
   --metadata="install-nvidia-driver=True" \
