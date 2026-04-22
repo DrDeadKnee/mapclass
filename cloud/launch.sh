@@ -67,6 +67,25 @@ for i in \$(seq 1 30); do
 done
 nvidia-smi
 
+# Install Docker (not included in the pytorch-2-9 DL VM image).
+# Wait for any apt/dpkg locks held by cloud-init or unattended-upgrades on first boot.
+if ! command -v docker &>/dev/null; then
+  echo "Installing docker.io ..."
+  while fuser /var/lib/dpkg/lock-frontend &>/dev/null || fuser /var/lib/apt/lists/lock &>/dev/null; do
+    echo "Waiting for apt lock ..."
+    sleep 5
+  done
+  for i in \$(seq 1 5); do
+    apt-get update && apt-get install -y docker.io python3-venv && break
+    echo "apt install failed, retry \${i}/5 ..."
+    sleep 10
+  done
+  command -v docker &>/dev/null || { echo "Failed to install docker"; exit 1; }
+fi
+
+# Ensure python3-venv is present even if docker was already installed
+dpkg -s python3-venv &>/dev/null || apt-get install -y python3-venv
+
 # Authenticate Docker against Artifact Registry
 gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
@@ -77,10 +96,54 @@ docker pull ${REGISTRY}
 mkdir -p /data/toons
 gcloud storage rsync gs://${BUCKET}/data/toons /data/toons --recursive
 
-echo "=== Starting training: \$(date) ==="
-
 CHECKPOINT_DIR=/checkpoints
-mkdir -p \${CHECKPOINT_DIR}
+mkdir -p \${CHECKPOINT_DIR}/tb
+
+# Start TensorBoard on the host, reading the checkpoint dir mounted into the
+# training container. Runs in the background; the docker run below blocks.
+echo "=== Starting TensorBoard on port 6006 ==="
+# Use the DL VM's /opt/conda Python: it ships with setuptools and is not
+# PEP 668 managed, so tensorboard installs cleanly. Avoids Ubuntu 24.04
+# system Python 3.12 venv pitfalls (missing setuptools / pkg_resources,
+# typing_extensions apt conflicts).
+if [[ -x /opt/conda/bin/python3 ]]; then
+  TB_PY=/opt/conda/bin/python3
+  TB_BIN=/opt/conda/bin/tensorboard
+  \${TB_PY} -m pip install --quiet --upgrade tensorboard
+else
+  echo "WARN: /opt/conda not found on VM; falling back to system venv."
+  TB_VENV=/opt/tb-venv
+  python3 -m venv \${TB_VENV}
+  \${TB_VENV}/bin/pip install --upgrade pip
+  # setuptools 81+ split pkg_resources into a separate package; tensorboard
+  # 2.20 still imports it from setuptools core. Pin below that boundary.
+  \${TB_VENV}/bin/pip install 'setuptools<81' wheel tensorboard
+  if ! \${TB_VENV}/bin/python -c "import pkg_resources" 2>/dev/null; then
+    echo "ERROR: pkg_resources still not importable. Dumping venv state:"
+    \${TB_VENV}/bin/pip list
+    ls -la \${TB_VENV}/lib/python3.12/site-packages/ | head -40
+  fi
+  TB_PY=\${TB_VENV}/bin/python
+  TB_BIN=\${TB_VENV}/bin/tensorboard
+fi
+
+nohup \${TB_BIN} \\
+  --logdir=\${CHECKPOINT_DIR}/tb \\
+  --host=0.0.0.0 \\
+  --port=6006 \\
+  --reload_interval=10 \\
+  &>/var/log/tensorboard.log &
+TB_PID=\$!
+sleep 3
+if ! kill -0 \${TB_PID} 2>/dev/null; then
+  echo "ERROR: TensorBoard failed to start. Last log lines:"
+  tail -n 30 /var/log/tensorboard.log || true
+  echo "Continuing without TensorBoard ..."
+else
+  echo "TensorBoard pid: \${TB_PID}"
+fi
+
+echo "=== Starting training: \$(date) ==="
 
 docker run --rm --gpus all \\
   -v /data:/data \\
@@ -115,6 +178,36 @@ case "${GPU_TYPE}" in
   *)                    MACHINE_TYPE=n1-standard-4 ;;
 esac
 
+# Detect caller's public IP so the firewall rule can be scoped to a /32.
+USER_IP=$(curl -fsS --max-time 10 https://ifconfig.me 2>/dev/null \
+       || curl -fsS --max-time 10 https://ipv4.icanhazip.com 2>/dev/null \
+       || true)
+USER_IP=${USER_IP//[[:space:]]/}
+if [[ -z "${USER_IP}" ]]; then
+  echo "Could not auto-detect your public IP; set USER_IP=x.x.x.x to override." >&2
+  exit 1
+fi
+
+FW_RULE="allow-tensorboard-6006"
+NET_TAG="paligemma-trainer"
+if gcloud compute firewall-rules describe "${FW_RULE}" --project="${PROJECT}" &>/dev/null; then
+  echo "Updating firewall rule ${FW_RULE} → source ${USER_IP}/32"
+  gcloud compute firewall-rules update "${FW_RULE}" \
+    --project="${PROJECT}" \
+    --source-ranges="${USER_IP}/32" \
+    --quiet
+else
+  echo "Creating firewall rule ${FW_RULE} (tcp:6006 from ${USER_IP}/32)"
+  gcloud compute firewall-rules create "${FW_RULE}" \
+    --project="${PROJECT}" \
+    --direction=INGRESS \
+    --action=ALLOW \
+    --rules=tcp:6006 \
+    --source-ranges="${USER_IP}/32" \
+    --target-tags="${NET_TAG}" \
+    --quiet
+fi
+
 echo "Creating VM: ${VM_NAME}"
 echo "  Zone:    ${ZONE}"
 echo "  GPU:     ${GPU_TYPE} on ${MACHINE_TYPE}"
@@ -131,14 +224,23 @@ gcloud compute instances create "${VM_NAME}" \
   --image-family=pytorch-2-9-cu129-ubuntu-2404-nvidia-580 \
   --image-project=deeplearning-platform-release \
   --boot-disk-size=100GB \
+  --tags="${NET_TAG}" \
   --metadata="install-nvidia-driver=True" \
   --metadata-from-file="startup-script=${STARTUP}" \
   --scopes=cloud-platform \
   ${PREEMPTIBLE_FLAG}
 
+EXT_IP=$(gcloud compute instances describe "${VM_NAME}" \
+  --project="${PROJECT}" --zone="${ZONE}" \
+  --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+
 echo ""
 echo "VM launched. Stream logs with:"
 echo "  gcloud compute ssh ${VM_NAME} --zone=${ZONE} -- tail -f /var/log/training.log"
+echo ""
+echo "TensorBoard (after ~1–2 min of startup + docker install):"
+echo "  http://${EXT_IP}:6006"
+echo "  (firewall allows tcp:6006 only from ${USER_IP}/32)"
 echo ""
 echo "Checkpoints will be saved to:"
 echo "  gs://${BUCKET}/checkpoints/${VM_NAME}/"

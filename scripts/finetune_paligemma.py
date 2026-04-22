@@ -38,6 +38,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
 from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 
 _HERE = Path(__file__).parent
@@ -259,6 +260,7 @@ def train(args: argparse.Namespace) -> None:
     # Training
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(output_dir / "tb"))
 
     model.train()
     global_step = 0
@@ -272,9 +274,10 @@ def train(args: argparse.Namespace) -> None:
             with torch.autocast(device_type=device.type, dtype=dtype):
                 outputs = model(**batch)
 
+            step_loss = outputs.loss.item()
             loss = outputs.loss / args.grad_accum
             loss.backward()
-            epoch_loss += outputs.loss.item()
+            epoch_loss += step_loss
 
             if step % args.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(
@@ -285,12 +288,19 @@ def train(args: argparse.Namespace) -> None:
                 optimizer.zero_grad()
                 global_step += 1
 
+                lr_now = scheduler.get_last_lr()[0]
+                avg = epoch_loss / step
+                writer.add_scalar("loss/step", step_loss, global_step)
+                writer.add_scalar("loss/running_avg", avg, global_step)
+                writer.add_scalar("lr", lr_now, global_step)
+                writer.add_scalar("epoch", epoch, global_step)
+
                 if global_step % 20 == 0:
-                    avg = epoch_loss / step
-                    lr_now = scheduler.get_last_lr()[0]
                     print(f"  Epoch {epoch} step {global_step} | loss {avg:.4f} | lr {lr_now:.2e}")
 
-        print(f"Epoch {epoch} complete | avg loss {epoch_loss / len(loader):.4f}")
+        epoch_avg = epoch_loss / len(loader)
+        writer.add_scalar("loss/epoch_avg", epoch_avg, epoch)
+        print(f"Epoch {epoch} complete | avg loss {epoch_avg:.4f}")
 
         # Save checkpoint after each epoch
         ckpt = output_dir / f"epoch{epoch:02d}"
@@ -298,6 +308,7 @@ def train(args: argparse.Namespace) -> None:
         processor.save_pretrained(ckpt)
         print(f"  Saved checkpoint → {ckpt}")
 
+    writer.close()
     print(f"Training complete. Final checkpoint: {output_dir / f'epoch{args.epochs:02d}'}")
 
 
