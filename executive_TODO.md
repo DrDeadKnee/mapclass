@@ -1,4 +1,9 @@
-# TODO
+# Executive TODO
+
+This file tracks tasks that require direct action by the project owner — typically
+external coordination (contacting licensing holders, dataset hosts), strategic decisions,
+or experiments that the owner wants to oversee personally. Implementation-side todos
+that Claude can pick up in-session are not listed here.
 
 ## Dataset licensing verification
 

@@ -1,39 +1,154 @@
 # MapClass
 
-Detecting and classifying terrain regions in map images, targeting grand strategy style campaigns at 100–2000 km scale. Multiple map image styles should be supported, from illustrated grand strategy aesthetics (EU4/CK3/HoI4 style) to satellite-derived imagery.
+A system architecture for stylized map understanding: dense per-pixel land cover and
+topography prediction across satellite, road, historical, and artistic maps. Target use
+case is grand strategy game cartography (EU4 / CK3 / HoI4 style) at 100–2000 km scale,
+with the framework generalising to any stylized cartographic source.
 
-The output is a **dense pixel-level prediction**, assigning two distinct attributes to every pixel:
+The academic framing — motivation, contributions, target venue — lives in
+[mockup.md](./mockup.md). This README is the implementation companion: phases,
+components, repo layout.
 
-- **Land cover** (what covers the surface): 9-class canonical taxonomy — water, trees, shrubland, grassland, cropland, built-up, bare/sparse, flooded/wetland, snow/ice. Derived from ESA WorldCover (available directly from S3, no GEE required); ESA Mangroves fold into Trees; ESA Moss/lichen folds into Bare/sparse.
-- **Topography** (shape of the terrain): derived from Copernicus DEM GLO-30 (available directly from S3) via slope classification — flat (<2°), hilly (2–15°), mountainous (>15°)
+## What MapClass produces
 
-Illustrated is the primary target domain. Satellite data serves as a source of ground-truth labels and geophysically realistic terrain adjacency statistics, which encode valid co-occurrence priors (e.g. ocean borders coast borders lowland).
+A **dense pixel-level prediction**, two attributes per pixel:
 
-The pixel-level predictions are designed to support downstream region delineation (tracing contiguous same-class areas into polygons), which is handled in a separate project.
+- **Land cover** (9 classes): water, trees, shrubland, grassland, cropland, built-up,
+  bare/sparse, flooded/wetland, snow/ice. Canonical taxonomy mapped from ESA WorldCover;
+  Mangroves fold into Trees, Moss/lichen folds into Bare/sparse.
+- **Topography** (3 classes): flat (<2°), hilly (2–15°), mountainous (>15°). Derived
+  from Copernicus DEM GLO-30 via slope classification.
 
+Pixel predictions are designed to support downstream region delineation (polygon
+tracing); that step lives in a separate project.
 
-## Project Plan
-This project will progress in four phases. PaliGemma-3B threads through all of them: fine-tuned first, it is then used to semi-automatically georeference the historical map dataset, and its adapted SigLIP vision encoder becomes the backbone for the final segmentation model.
+## GeoViLM architecture
 
-1. **Fine-tune PaliGemma-3B on illustrated map terrain symbols.**
-    - **Why PaliGemma** — Historical maps carry meaning in both visual symbols (mountain icons, forest hatching, coastal shading) and embedded text (place names, region labels, sea names). A purely visual model cannot leverage "Alpes" or "Sahara" written on a map; a model with a frozen language decoder can. PaliGemma-3B (SigLIP vision encoder + Gemma language model) handles both modalities and is needed before the dataset can be assembled.
-    - **LoRA on vision encoder only** — The Gemma language model is completely frozen (base weights and LoRA parameters). LoRA adapters are applied only to the SigLIP attention layers (`q_proj`, `k_proj`, `v_proj`, `out_proj`). The multi-modal projector is fully trainable. This guarantees zero forgetting of the model's text understanding — place names and geographic terminology are fully preserved.
-    - **Training data** — `data/toons/` contains ~120 hex tile PNGs covering all 9 land cover classes and 3 topography classes, named by terrain type. Each tile is augmented into four visual styles (original, grayscale, parchment/sepia, faded) and tiled into 2×2 region composites, paired with five natural-language prompt templates (~4,760 training samples total). Run with `scripts/finetune_paligemma.py`.
+GeoViLM is a multi-component system, not a new model class. Four components:
 
-2. **Build a dataset of pixel-label pairs.** Sources:
-    - **Historical illustrated maps** — 16th–17th century maps (Ortelius, Mercator, Blaeu school) are the direct aesthetic ancestor of grand strategy game cartography and provide authentic illustrated style that synthetic generation cannot replicate. Labels are derived by registering each map to modern coordinates and overlaying ESA WorldCover (land cover) and Copernicus DEM (topography). Labels are applied with class-conditional per-source loss weights reflecting temporal reliability: topography (flat/hilly/mountainous) is fully trusted (geology is stable); water/coastlines are mostly trusted at regional scale; trees, built-up, and cropland are heavily downweighted (land use has shifted substantially since the 16th–17th century). Bare/sparse and snow/ice are treated as reliable. The **David Rumsey Map Collection** is the primary source — searched programmatically via the LUNA API (`scripts/build_historical_dataset.py search`), ranked by metadata richness, and downloaded as GeoTIFFs for georeferenced maps. Coverage is restricted to regional-scale maps (100–2000 km extent); city plans and large-scale surveys are excluded.
-        - **Georeferencing** — Maps already registered in the Georeferencer service are downloaded automatically. Unregistered maps are emitted to `unregistered_manifest.json`. Semi-automatic georeferencing (Phase 1 prerequisite): the fine-tuned PaliGemma generates dense terrain predictions on the unregistered map image; these are matched against a WorldCover + Copernicus DEM reference grid via cross-correlation (rigid alignment) followed by thin-plate spline warping (local distortion). Coastlines, mountain ranges, and major water bodies act as stable anchor features. For maps where this fails, manual GCP placement in MapWarper or QGIS remains the fallback (output must be a warped GeoTIFF in EPSG:4326).
-        - **Label generation** — `scripts/build_historical_dataset.py build` fetches WorldCover tiles and Copernicus DEM for each map's extent, derives slope-based topography classes, and writes `image.png`, `land_cover.png`, `topography.png`, and `sample_weights.json` per map.
-    - **Synthetic illustrated maps** — use an agentic model to generate maps via Azgaar's Fantasy Map Generator and a custom Pillow-based renderer. Because the agent controls asset placement, ground truth pixel annotations (land cover + topography) are generated automatically in the same pass. Multiple rendering styles are used to maximise visual diversity. Azgaar's biome taxonomy is mapped to the canonical 9-class land cover taxonomy; cropland, built-up, and flooded/wetland are absent from synthetic maps and appear only in satellite-derived data (up-weighted in training). Topography labels are derived from Azgaar's normalised heightmap: raw height h ∈ [20, 100] is re-normalised to [0, 100] before applying thresholds (flat ≤ 20, hilly 20–55, mountainous > 55); calibration against SRTM statistics is left as future work.
-    - **Satellite-derived imagery** — ESA WorldCover (downloaded directly from `s3://esa-worldcover`, no GEE required) mapped to the canonical 9-class taxonomy, combined with Copernicus DEM GLO-30 (`s3://copernicus-dem-30m`) for slope-derived topography, at regional scale (100–2000 km). Satellite adjacency statistics provide geophysically grounded priors on terrain co-occurrence. Dynamic World (GEE) remains an optional second land cover source for temporal diversity.
+1. **Vision-language backbone** — PaliGemma-3B is the front-runner candidate (SigLIP
+   vision encoder + Gemma language decoder). Benchmarked zero-shot first, then
+   fine-tuned in-system.
+2. **Rotationally-invariant OCR module** — separate component for reading curved /
+   rotated map text (place names, region labels). Adapted from scene-text recognition
+   work (CRAFT, ABCNet are candidate starting points).
+3. **Dense segmentation heads** — two lightweight heads on the backbone's vision
+   features, one per output attribute (land cover + topography).
+4. **Auto-georeferencing pipeline** — aligns stylized maps to real-world coordinates
+   via cross-correlation against a WorldCover + DEM reference grid, followed by
+   thin-plate-spline warping. Bootstrapped iteratively: v0 GeoViLM trained on
+   already-registered maps → use v0 to georeference unregistered maps → v1 retraining
+   on the expanded dataset. Intended as a reusable component for other stylized-map
+   work, not just an internal label-prep step.
 
-3. **Build a dense semantic segmentation pipeline.**
-    - Regional context is critical: the identity of a region depends as much on its neighbors as on its own appearance. Classifying regions in isolation will not work well.
-    - The preferred architecture is **dense semantic segmentation** using the **SigLIP vision encoder from PaliGemma** (fine-tuned in Phase 1; reusing the adapted weights is the natural path) with two lightweight output heads (land cover + topography). At inference time PaliGemma's full multimodal capability — visual terrain recognition plus reading of place names and labels — is available to the segmentation head. Benchmark alternative backbones are **DINOv2** (self-supervised ViT) and **Swin Transformer** (hierarchical ViT; natively multi-scale).
-    - Coarse-to-fine inference: coarse feature maps establish global context; finer maps sharpen boundaries. Implementable as a multi-resolution sliding window on SigLIP/DINOv2, or natively via Swin.
-    - A large first-kernel ConvNet trained from scratch remains a stretch-goal benchmark. See `notes/architectural_references.md` for discussion and citations.
+Backbone alternatives for the segmentation head (DINOv2, Swin, large-kernel CNNs) and
+the rationale for hierarchical vs. coarse-to-fine inference are discussed in
+[notes/architectural_references.md](./notes/architectural_references.md).
 
-4. **Fine-tune and evaluate the segmentation model, then upload to HuggingFace.**
-    - **Test set**: held-out synthetic maps (same generation pipeline, unseen during training).
-    - **Metric**: joint per-pixel negative log-likelihood — `-(log p_land_cover + log p_topography)` averaged over pixels. Land cover and topography are not statistically orthogonal (e.g. water is always flat, cropland is rarely mountainous), so a joint metric is more appropriate than evaluating heads independently.
-    - Hand-annotation of real grand strategy map images is deferred; Label Studio and CVAT are candidate tools if a real-domain test set is added later.
+## Phase plan
+
+### 1. Dataset construction
+
+Four open-source sources covering visual diversity:
+
+- **Synthetic illustrated maps** — Azgaar's Fantasy Map Generator + custom Pillow
+  renderer (`scripts/build_dataset.py`, `render.py`, `label.py`, `biome_mapping.py`).
+  Multiple rendering styles (flat / illustrated / satellite). Pixel-perfect ground
+  truth since the renderer controls placement. Cropland, built-up, and flooded/wetland
+  are absent from synthetic maps and appear only in satellite-derived data
+  (up-weighted in training).
+- **Historical illustrated maps** — David Rumsey collection, registered to modern
+  coordinates and overlaid with WorldCover + DEM labels
+  (`scripts/build_historical_dataset.py`, `scripts/historical/`). v0 scoped to maps
+  already registered in the Georeferencer service; v1+ expands via the bootstrapped
+  auto-georeferencing component. Coverage restricted to regional-scale maps
+  (100–2000 km extent); city plans excluded.
+- **Satellite imagery** — ESA WorldCover (`s3://esa-worldcover`, CC-BY 4.0) + Copernicus
+  DEM GLO-30 (`s3://copernicus-dem-30m`) at regional scale. Provides ground-truth labels
+  and geophysical co-occurrence priors.
+- **Road maps** — TBD source (OSM tile renders are the obvious candidate). Not yet
+  implemented.
+
+Per-source class-conditional loss weights reflect temporal reliability: topography is
+fully trusted (geology is stable); water/coastlines mostly trusted at regional scale;
+trees, built-up, and cropland heavily downweighted on historical maps because land use
+has shifted substantially since the 16th–17th century. Bare/sparse and snow/ice are
+treated as reliable.
+
+### 2. Failure analysis benchmark
+
+Zero-shot evaluation of CLIP, SigLIP, OpenCLIP, and PaliGemma on the held-out stylized
+test set, with per-class accuracy and confusion matrices. Combined with **dynamic-LRP**
+analysis ([arXiv:2512.07010](https://arxiv.org/pdf/2512.07010)) to localise where in
+each model the failures originate. Replaces hand-wavy claims with measured evidence and
+provides the entry point for the mechanistic-failure contribution. Not yet implemented;
+tracked in [executive_TODO.md](./executive_TODO.md).
+
+### 3. GeoViLM construction
+
+- Adapt the OCR module for curved / rotated text (separate sub-pipeline, may need its
+  own training data).
+- Add the dense segmentation heads on the chosen backbone.
+- Train end-to-end with per-source loss weighting.
+- Bootstrap auto-georeferencing: v0 → register more historical maps → v1 retraining.
+  The v0-vs-v1 dataset gap also serves as an ablation for the system-paper claim that
+  the auto-georeferencing component contributes meaningfully.
+
+### 4. Evaluation + write-up
+
+- **Test sets**: held-out synthetic maps + held-out registered historical maps.
+- **Metric**: joint per-pixel negative log-likelihood
+  `−(log p_land_cover + log p_topography)`. Joint rather than independent because land
+  cover and topography are not statistically orthogonal (water is always flat,
+  cropland is rarely mountainous).
+- **Component ablations** — backbone-only vs. +OCR vs. +segmentation heads vs. full
+  system, supporting the system-paper claim that each component is jointly necessary.
+- Hand-annotation of real grand strategy maps is deferred; Label Studio / CVAT are
+  candidates if a real-domain test set is added later.
+
+## Repo layout
+
+```
+data/
+  raw/               Azgaar GeoJSON exports (synthetic input)
+  renders/           Synthetic map outputs (image + label PNGs)
+  labels/            Pixel-level label rasters
+  historical/        Historical map sources and derived label outputs
+  toons/             Tile assets — kept as validation set / future
+                     pre-labelled low-level feature library
+  TODO.md            Open data-side todos
+notes/
+  architectural_references.md   Backbone choice, hierarchical-vs-large-kernel refs
+scripts/
+  build_dataset.py             Synthetic map dataset orchestrator
+  render.py                    Synthetic map renderer (multi-style)
+  label.py                     Synthetic map label generator
+  biome_mapping.py             Azgaar biome → canonical taxonomy
+  augment.py                   Image augmentation utilities (parchment, sepia, …)
+  toon_mapping.py              Biome → tile filename index
+  build_historical_dataset.py  Historical map dataset orchestrator
+  historical/
+    rumsey.py                  David Rumsey LUNA API client
+    worldcover.py              ESA WorldCover S3 fetcher
+    dem.py                     Copernicus DEM S3 fetcher
+    label.py                   Historical map label generation
+models/                        Trained model checkpoints (currently empty)
+mockup.md                      Academic framing
+README.md                      This file
+executive_TODO.md              Owner-actionable todos (licensing, benchmarks)
+LICENSE
+requirements.txt
+```
+
+## Status
+
+**In progress.** Repo is being reworked from an earlier hex-tile fine-tuning plan to
+the system-paper plan in mockup.md. Working: synthetic dataset pipeline, historical
+map sourcing and labelling. Not yet implemented: zero-shot benchmark harness, OCR
+module, segmentation heads, auto-georeferencing pipeline, road-map source. Open
+licensing and benchmark items live in [executive_TODO.md](./executive_TODO.md).
+
+## Cloud / training workflow
+
+Cloud training is handled by a separate VM-provisioning repo with an SSH workflow.
+This repo does not carry docker or cloud build infrastructure.

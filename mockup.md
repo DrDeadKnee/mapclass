@@ -65,3 +65,13 @@ its components are jointly necessary on stylized maps — not a novel fusion pri
 suggest this could be used for applications such as optimal routing, game development,
 treasure hunting, and travel guides.
 
+### Target Images
+I think we should have some target images. A good one would be a contrast bewtween a few popular
+fantasy maps for the oriignal model (with attributions), and then a sort-of progression of the
+activations over time.
+
+I think we should target:
+1. Middle-Earth (tolkein)
+2. Westeros (George R.R. Martin)
+3. [Circle of the World](https://www.reddit.com/r/TheFirstLaw/comments/pl6c7w/updated_first_law_map_should_now_feature_every/) (Joe Abercrombie)
+4. Warhammer: The Old World (Games Workshop)
