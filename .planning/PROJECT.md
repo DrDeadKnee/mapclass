@@ -27,20 +27,22 @@ MapClass is a training pipeline and model for **dense per-pixel land cover and t
 - [ ] **DATA-06** Per-source class-conditional loss weights (topography fully trusted; water mostly trusted; trees/built-up/cropland heavily downweighted on historical maps; bare/sparse and snow/ice trusted)
 - [ ] **GEOREF-01** Auto-georeferencing tool (cross-correlation against WorldCover + DEM reference grid → thin-plate-spline warping) — used as a training-data-prep tool, not an inference component
 - [ ] **GEOREF-02** Bootstrap loop: train v0 on already-registered historical maps → use v0 to register currently-unregistered Rumsey maps → retrain v1 on the expanded dataset
-- [ ] **MODEL-01** Small VL backbone (specific candidate selected in research phase; PaliGemma-3B is excluded by inference budget)
+- [ ] **MODEL-01** Small VL backbone for the v1 ship target — the inference module's backbone (specific candidate selected in research phase; PaliGemma-3B is excluded as the *ship* backbone by inference budget)
 - [ ] **MODEL-02** Rotationally-invariant OCR module for curved / rotated map text (CRAFT or ABCNet as candidate starting points; specific choice in research phase)
 - [ ] **MODEL-03** Two lightweight dense segmentation heads on the backbone's vision features (one per output attribute: land cover, topography)
-- [ ] **TRAIN-01** End-to-end training of GeoViLM v0 with per-source loss weighting on the synthetic + already-registered-historical + OSM dataset
-- [ ] **TRAIN-02** End-to-end retraining of GeoViLM v1 on the bootstrap-expanded dataset
-- [ ] **EVAL-01** Held-out joint per-pixel NLL `−(log p_land_cover + log p_topography)` on synthetic + historical test splits as the v1 ship metric
-- [ ] **EVAL-02** Qualitative spot-check renders on Tolkien Middle-Earth, Westeros, Abercrombie First-Law Circle of the World, and Warhammer Old World as ship demos (no ground truth, no metric)
-- [ ] **SHIP-01** Inference Python module + trained checkpoint, packaged for the separate hex-grid app to consume; runs on single CPU or 4–8 GB consumer GPU
+- [ ] **MODEL-04** PaliGemma-3B benchmark variant — same GeoViLM stack (OCR + seg heads + auto-georef bootstrap) with PaliGemma-3B swapped in as the backbone in place of MODEL-01. Trained as a bellwether upper bound to validate the small-backbone choice; **not** shipped as inference
+- [ ] **TRAIN-01** End-to-end training of GeoViLM v0 with per-source loss weighting on the synthetic + already-registered-historical + OSM dataset, run for **both backbones** (MODEL-01 small VL + MODEL-04 PaliGemma)
+- [ ] **TRAIN-02** End-to-end retraining of GeoViLM v1 on the bootstrap-expanded dataset, run for **both backbones**
+- [ ] **EVAL-01** Held-out joint per-pixel NLL `−(log p_land_cover + log p_topography)` on synthetic + historical test splits as the v1 ship metric (computed for the small-backbone variant; PaliGemma variant evaluated under EVAL-03)
+- [ ] **EVAL-02** Qualitative spot-check renders on Tolkien Middle-Earth, Westeros, Abercrombie First-Law Circle of the World, and Warhammer Old World as ship demos (no ground truth, no metric); rendered for both backbones
+- [ ] **EVAL-03** PaliGemma-vs-small-backbone NLL comparison on the same held-out splits — bellwether for the small-backbone choice. If the gap is too large to accept, the small-backbone candidate (MODEL-01) is reconsidered before ship
+- [ ] **SHIP-01** Inference Python module + trained checkpoint of the **small-backbone variant**, packaged for the separate hex-grid app to consume; runs on single CPU or 4–8 GB consumer GPU. PaliGemma checkpoint is retained as a research/benchmark artifact, not packaged for the app
 
 ### Out of Scope (v1)
 
 <!-- Explicit boundaries with reasoning to prevent re-adding. -->
 
-- **PaliGemma-3B as the inference backbone** — 6 GB FP16 weights alone, breaks the single-CPU / small-GPU inference budget. Will be considered only as a paper-time comparison if milestone 2 happens.
+- **PaliGemma-3B as the v1 ship / inference backbone** — 6 GB FP16 weights alone, breaks the single-CPU / small-GPU inference budget. PaliGemma *training* is in scope as a v1 benchmark/bellwether variant (MODEL-04, EVAL-03); only its use as the packaged inference backbone consumed by the hex-grid app is excluded.
 - **Auto-georef as an inference / app feature** — the modder's input is a fantasy map with no real-world coordinates. Auto-georef is a training-data-prep tool only.
 - **Hex-grid aggregation, polygon tracing, region delineation** — owned by the separate hex-grid app downstream of this project.
 - **EU4 / CK3 / HoI4 engine-specific output formats** (terrain.bmp, heightmap.png, province bitmaps) — output is generic per-pixel class probabilities; the hex-grid app handles engine packaging.
@@ -89,7 +91,7 @@ MapClass is a training pipeline and model for **dense per-pixel land cover and t
 |----------|-----------|---------|
 | App-first; paper attempt is opportunistic in milestone 2 | Owner's primary goal is a usable model for the downstream hex-grid app; publication is a stretch | — Pending |
 | v1 model components: VL backbone + OCR + dense seg heads. Auto-georef is training-tool-only | Inference budget rules out a heavy VLM for app use; hex-grid downstream consumes pixel probabilities; fantasy maps don't georef | — Pending |
-| PaliGemma-3B excluded as the v1 backbone | 6 GB FP16 weights break the single-CPU / small-GPU inference budget; specific small VL candidate selected in research phase | — Pending |
+| PaliGemma-3B excluded as the v1 ship/inference backbone but included as a v1 benchmark/bellwether variant | 6 GB FP16 weights break the inference budget for shipping. Training the same GeoViLM stack with PaliGemma swapped in (MODEL-04) gives an upper-bound NLL number that validates whether the small-backbone choice (MODEL-01) is good enough; if the gap is too large, the small-backbone candidate is reconsidered before ship | — Pending |
 | OSM road tiles included as the third v1 dataset source | Improves robustness on stylized maps that emphasise roads; small additive sub-pipeline next to the working synthetic and historical pipelines | — Pending |
 | Auto-georef bootstrap loop (v0 → register → v1 retrain) included in v1 | Expands the historical training set; the v0/v1 dataset gap also makes a clean ablation if milestone-2 paper happens | — Pending |
 | Validation v1: held-out NLL on synthetic + historical, qualitative spot-checks on four target fantasy maps | Real ground truth lives only in the registered sources; fantasy validation is qualitative only at v1 cost | — Pending |
