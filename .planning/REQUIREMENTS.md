@@ -71,20 +71,20 @@ Filled in by the roadmapper after `ROADMAP.md` is generated.
 
 | REQ-ID | Phase |
 |--------|-------|
-| DATA-05 | — |
-| DATA-06 | — |
-| GEOREF-01 | — |
-| GEOREF-02 | — |
-| MODEL-01 | — |
-| MODEL-02 | — |
-| MODEL-03 | — |
-| MODEL-04 | — |
-| TRAIN-01 | — |
-| TRAIN-02 | — |
-| EVAL-01 | — |
-| EVAL-02 | — |
-| EVAL-03 | — |
-| SHIP-01 | — |
+| DATA-05 | Phase 3 |
+| DATA-06 | Phase 2 |
+| GEOREF-01 | Phase 4 |
+| GEOREF-02 | Phase 4 |
+| MODEL-01 | Phase 2 |
+| MODEL-02 | Phase 3 |
+| MODEL-03 | Phase 1 |
+| MODEL-04 | Phase 5 |
+| TRAIN-01 | Phase 3 |
+| TRAIN-02 | Phase 4 |
+| EVAL-01 | Phase 4 |
+| EVAL-02 | Phase 6 |
+| EVAL-03 | Phase 5 |
+| SHIP-01 | Phase 6 |
 
 ---
 *Generated: 2026-05-08 from PROJECT.md Active list. Update this file only if PROJECT.md changes; keep in sync.*
