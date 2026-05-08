@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: executing
+stopped_at: Session resumed — Phase 1 plans 01-01/01-02/01-03 committed (1cfb2dd) and ready to execute in waves. Proceeding to /gsd-execute-phase 1.
+last_updated: "2026-05-08T21:12:08.470Z"
+last_activity: 2026-05-08 -- Phase 01 execution started
+progress:
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 0
+  percent: 0
+---
+
 # Project State
 
 ## Project Reference
@@ -5,20 +21,21 @@
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** A small, cheap-to-run model that returns reliable per-pixel land-cover + topography probability maps on stylized inputs. Inference must run on a single CPU host or 4–8 GB consumer GPU.
-**Current focus:** Phase 1 — End-to-End Skeleton (Synthetic + Mock Backbone)
+**Current focus:** Phase 01 — end-to-end-skeleton
 
 ## Current Position
 
-Phase: 1 of 6 (End-to-End Skeleton — Synthetic + Mock Backbone)
-Plan: — of — (planning has not started yet)
-Status: Ready to plan
-Last activity: 2026-05-08 — ROADMAP.md generated; STATE.md and REQUIREMENTS.md traceability synced.
+Phase: 01 (end-to-end-skeleton) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 01
+Last activity: 2026-05-08 -- Phase 01 execution started
 
-Progress: [██░░░░░░░░] ~25% (init + research + roadmap; planning + execution pending)
+Progress: [███░░░░░░░] ~30% (init + research + roadmap + phase-1 planning; execution pending)
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 0
 - Average duration: —
 - Total execution time: —
@@ -35,6 +52,7 @@ Progress: [██░░░░░░░░] ~25% (init + research + roadmap; plan
 | 6. Ship the Small-Backbone Variant | 0 | — | — |
 
 **Recent Trend:**
+
 - No plans executed yet.
 
 *Updated after each plan completion.*
@@ -79,5 +97,5 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-05-08
-Stopped at: Phase 1 context gathered. CONTEXT.md captures Mock-backbone fidelity decisions (learnable conv stub, single-stage features, seeded init, metadata-only checkpoint ID) and EVAL-03 protocol decisions (markdown-only, deferred threshold with `DECIDE_AT_PHASE_5` sentinel, strict fairness, script-guarded pre-registration). Ready for `/gsd-plan-phase 1`.
-Resume file: .planning/phases/01-end-to-end-skeleton/01-CONTEXT.md
+Stopped at: Session resumed — Phase 1 plans 01-01/01-02/01-03 committed (1cfb2dd) and ready to execute in waves. Proceeding to /gsd-execute-phase 1.
+Resume file: .planning/phases/01-end-to-end-skeleton/01-01-PLAN.md (wave 1 entry point)
