@@ -79,5 +79,5 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-05-08
-Stopped at: ROADMAP.md generated and committed; ready for `/gsd-plan-phase 1`.
-Resume file: None
+Stopped at: Phase 1 context gathered. CONTEXT.md captures Mock-backbone fidelity decisions (learnable conv stub, single-stage features, seeded init, metadata-only checkpoint ID) and EVAL-03 protocol decisions (markdown-only, deferred threshold with `DECIDE_AT_PHASE_5` sentinel, strict fairness, script-guarded pre-registration). Ready for `/gsd-plan-phase 1`.
+Resume file: .planning/phases/01-end-to-end-skeleton/01-CONTEXT.md
