@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from biome_mapping import h_to_landcover, h_to_topo
+from scripts.biome_mapping import h_to_landcover, h_to_topo
 
 NODATA = 255  # fill value for pixels not covered by any cell (shouldn't occur)
 WATER_TOPO = 255  # sentinel: water cells have no topography class

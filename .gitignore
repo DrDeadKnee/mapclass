@@ -1,5 +1,5 @@
-# Dataset (large binary files, generated data)
-data/
+# Dataset (large binary files, generated data) — root only; mapclass/data/ is a Python package
+/data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
