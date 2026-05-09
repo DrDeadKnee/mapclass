@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mapclass"
+version = "0.1.0"
+description = "GeoViLM training, evaluation, and inference for stylized cartography"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+  # Core ML (research/STACK.md "Recommended Stack" minimums)
+  "torch>=2.4,<3.0",
+  "transformers>=4.47,<5.0",
+  "accelerate>=0.34",
+  "peft>=0.11",
+  "bitsandbytes>=0.43",
+  "safetensors>=0.4.5",
+  # Existing data pipeline (preserved from requirements.txt)
+  "Pillow",
+  "numpy",
+  "rasterio",
+  "pyproj",
+  "requests",
+  # Phase 1 new (config / logging / metrics)
+  "omegaconf>=2.3",
+  "tensorboard>=2.18",
+  "pyyaml>=6.0.2",
+  "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+include = ["mapclass*"]
