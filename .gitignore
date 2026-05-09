@@ -1,6 +1,12 @@
 # Dataset (large binary files, generated data) — root only; mapclass/data/ is a Python package
 /data/
 
+# Trained model checkpoints (binary artifacts; produced by mapclass.train smoke + full runs)
+/models/
+
+# Local virtual environments (developer artifact; not committed)
+/.venv/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
