@@ -31,3 +31,14 @@ def taxonomy_hash() -> str:
         sort_keys=True,
     ).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+class TaxonomyHashMismatchError(ValueError):
+    """Raised by mapclass.infer.load_model on taxonomy_hash mismatch (PITFALL 4 prevention #3).
+
+    Subclasses ValueError to match Pattern D — uniform validator-error hierarchy
+    alongside SampleContractError, LossWeightsSchemaError, SplitsContaminationError.
+    Lives here (not in mapclass/infer.py) so seg-head/eval consumers can also
+    raise/catch it without breaking ARCHITECTURE.md Anti-Pattern 4 (mapclass.infer
+    isolation: infer is the consumer of this exception, NOT its definer).
+    """
