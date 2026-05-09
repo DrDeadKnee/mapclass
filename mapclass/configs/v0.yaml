@@ -1,0 +1,21 @@
+# mapclass/configs/v0.yaml — Phase 1 (Mock backbone) training config.
+#
+# Phase 1 is the synthetic-only smoke run. Phase 2 reuses the file, swaps backbone.
+
+run_name: phase1_mock_smoke
+seed: 42                                    # consumed by mapclass.seeding (PITFALL 15)
+data:
+  root: data/renders                        # synthetic-only for Phase 1
+  splits_path: mapclass/configs/splits.json # PITFALL 5: committed deterministic splits
+  loss_weights_path: mapclass/configs/loss_weights.yaml
+  num_samples: 100                          # CONTEXT.md "Skeleton-run dataset size"
+  batch_size: 4
+  image_size: 384                           # match SmolVLM's input so Phase-2 swap is trivial
+model:
+  backbone: mock                            # D-04: tagged in checkpoint metadata
+training:
+  n_epochs: 2                               # smoke run, NOT a ship metric
+  lr: 1e-3
+  optimizer: adam
+checkpoint:
+  out_path: models/geovilm_phase1_mock.pt
