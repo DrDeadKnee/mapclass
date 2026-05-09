@@ -187,6 +187,60 @@ The locked v1 scope, constraints, decisions, and out-of-scope list live in
 [.planning/PROJECT.md](./.planning/PROJECT.md). Open licensing items live in
 [executive_TODO.md](./executive_TODO.md).
 
+## Quick start (Phase 1 walking skeleton)
+
+This is the **Phase 1 Mock-backbone smoke setup**. The pipeline is the deliverable here,
+not the score — the model is a tiny learnable conv stub used to prove the gradient path
+flows end-to-end. SmolVLM lands in Phase 2; PaliGemma2 lands in Phase 5.
+
+### Install
+
+```sh
+pip install -e .
+python -c "import mapclass"   # smoke import
+```
+
+### Smoke run (Mock backbone gradient-path proof)
+
+```sh
+# 5-iteration loss-decrease check on the Mock backbone (D-01 — proves gradient flow).
+python -m mapclass.train --config mapclass/configs/v0.yaml --smoke
+# writes models/geovilm_phase1_mock.pt with embedded safetensors metadata
+# (model_version, dataset_manifest_sha, taxonomy_hash, training_seed,
+#  source_class_weights_hash, backbone, processor_identity).
+```
+
+### Inference
+
+```sh
+python -m mapclass.infer models/geovilm_phase1_mock.pt path/to/image.png
+# prints land_cover (9, H, W) + topography (3, H, W) probability tensors;
+# WATER_TOPO=255 sentinel overlaid where land_cover argmax == water.
+# load_model() refuses to load if the checkpoint's taxonomy_hash does not
+# match the live mapclass.data.taxonomy.taxonomy_hash() (PITFALL 4 #3).
+```
+
+### Eval
+
+```sh
+python -m mapclass.eval --checkpoint models/geovilm_phase1_mock.pt \
+                        --config mapclass/configs/v0.yaml \
+                        --split heldout --report eval_report.json
+# writes eval_report.json with per-source × per-class NLL, per-source mean,
+# overall mean, and a calibration: null field reserved for Phase 2+.
+# Refuses to run if the test split overlaps the train split
+# (SplitsContaminationError; PITFALL 5 prevention #3).
+```
+
+### Caveats
+
+Phase 1 numbers will be near `log(num_classes)` because the backbone is Mock
+(D-01 in `.planning/phases/01-end-to-end-skeleton/01-CONTEXT.md`). The pipeline
+is the deliverable, not the score; SmolVLM lands in Phase 2 and is the first
+backbone whose NLL numbers are meaningful. The Mock backbone is intentionally
+a learnable conv stub (~19k params) — you should expect modest improvement
+over the class-frequency prior, nothing more.
+
 ## Cloud / training workflow
 
 Cloud training is handled by a separate VM-provisioning repo with an SSH workflow.
