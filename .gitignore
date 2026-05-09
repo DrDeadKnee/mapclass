@@ -210,6 +210,9 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# GSD / Claude Code agent worktrees (transient, never commit)
+.claude/worktrees/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

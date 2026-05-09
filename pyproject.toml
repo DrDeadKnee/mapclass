@@ -11,6 +11,7 @@ readme = "README.md"
 dependencies = [
   # Core ML (research/STACK.md "Recommended Stack" minimums)
   "torch>=2.4,<3.0",
+  "torchvision>=0.19,<1.0",
   "transformers>=4.47,<5.0",
   "accelerate>=0.34",
   "peft>=0.11",
