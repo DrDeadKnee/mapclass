@@ -1,0 +1,37 @@
+# mapclass/configs/loss_weights.yaml
+#
+# Per-source × per-class loss weights. Schema validated strictly at training
+# startup by mapclass.data.loss_weights.LossWeights.load (PITFALL 3 prevention).
+# Every source row MUST list ALL 9 land-cover classes with explicit floats —
+# no missing keys, no implicit defaults.
+#
+# Initial values for rumsey_registered are copied verbatim from
+# scripts/historical/label.py:HISTORICAL_LC_WEIGHTS (lines 40-50).
+
+sources:
+  synthetic_azgaar:
+    land_cover:
+      water:           1.0
+      trees:           1.0
+      shrubland:       1.0
+      grassland:       1.0
+      cropland:        0.0   # absent from synthetic; explicit 0.0 (no implicit default)
+      built_up:        0.0   # absent from synthetic
+      bare_sparse:     1.0
+      flooded_wetland: 0.0   # absent from synthetic
+      snow_ice:        1.0
+    topography: 1.0
+
+  rumsey_registered:
+    # Initial values from scripts/historical/label.py:HISTORICAL_LC_WEIGHTS
+    land_cover:
+      water:           1.0
+      trees:           0.3   # significant deforestation / reforestation
+      shrubland:       0.7
+      grassland:       0.7
+      cropland:        0.15  # agricultural change is dramatic
+      built_up:        0.1   # medieval cities vs. modern footprints
+      bare_sparse:     1.0
+      flooded_wetland: 0.5
+      snow_ice:        1.0
+    topography: 1.0
