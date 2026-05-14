@@ -1,0 +1,28 @@
+{
+  "source_path": "/home/drdreadknee/mapclass/notes/architectural_references.md",
+  "type": "DOC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "Architectural References",
+  "summary": "Notes collecting design rationale and reference reading for choosing a segmentation backbone (DINOv2/Swin vs large-kernel ConvNet) and planned domain-gap experiments.",
+  "scope": [
+    "segmentation backbone selection",
+    "coarse-to-fine recursive segmentation",
+    "large-kernel ConvNet alternative",
+    "progressive backbone unfreezing experiment",
+    "domain gap analysis",
+    "reference reading list"
+  ],
+  "cross_refs": [
+    "https://arxiv.org/abs/2103.14030",
+    "https://arxiv.org/abs/2306.06842",
+    "https://arxiv.org/abs/2304.07193",
+    "https://arxiv.org/abs/1703.02719",
+    "https://arxiv.org/abs/2203.06717",
+    "https://arxiv.org/abs/2207.03620",
+    "https://arxiv.org/abs/2201.03545"
+  ],
+  "locked": false,
+  "precedence": null,
+  "notes": ""
+}
