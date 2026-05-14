@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: phase-complete
-stopped_at: Session resumed via /gsd-resume-work — Phase 01 complete (3/3 plans + SUMMARY.md, working tree clean). Ready to transition to Phase 02.
-last_updated: "2026-05-14T00:00:00.000Z"
-last_activity: 2026-05-09 -- Phase 01 plan 03 (EVAL-03 protocol) committed (214f07d)
+stopped_at: "Session resumed via /gsd-resume-work. Investigated dataset state and confirmed Phase 02 prereq gap: no Azgaar GeoJSON inputs anywhere (synthetic pipeline has render/label code but zero raw inputs); no `data/historical/raw/georeferenced/` (Rumsey `search` not yet run for the registered subset; `unregistered_manifest.json` is only the GCP-needed leftover). Smoke fixtures (100 64×64 in `data/renders/`) and `data/toons/` artwork (13 hex-tile classes on GCS) exist but are not training samples. Decision: **insert Phase 1.5 dedicated to the real v0-thin dataset build** rather than fattening Phase 02 or running Rumsey search blind. Phase 02 stays scoped to the SmolVLM swap."
+last_updated: "2026-05-14T20:42:40.002Z"
+last_activity: 2026-05-09 -- Phase 01 plan 03 EVAL-03 protocol committed (214f07d)
 progress:
-  total_phases: 6
+  total_phases: 7
   completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 17
+  percent: 14
 ---
 
 # Project State
@@ -21,15 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** A small, cheap-to-run model that returns reliable per-pixel land-cover + topography probability maps on stylized inputs. Inference must run on a single CPU host or 4–8 GB consumer GPU.
-**Current focus:** Phase 02 — Small VL Backbone Slice (SmolVLM-500M swap, first real probabilities)
+**Current focus:** Phase 01.1 (INSERTED) — Real v0-thin Dataset Build (prerequisite for Phase 02 SmolVLM training)
 
 ## Current Position
 
-Phase: 01 (end-to-end-skeleton) — COMPLETE (3/3 plans summarized, working tree clean)
-Next phase: 02 (small VL backbone slice) — not yet scaffolded (no `.planning/phases/02-*` dir, no CONTEXT.md)
-Last activity: 2026-05-09 -- Phase 01 plan 03 EVAL-03 protocol committed (214f07d)
+Phase: 01 (end-to-end-skeleton) — COMPLETE (3/3 plans summarized)
+Next phase: 01.1 (real-v0-thin-dataset-build, INSERTED) — directory created, ready to plan/discuss
+Following: 02 (small VL backbone slice) — depends on 01.1's dataset
+Last activity: 2026-05-14 -- Phase 01.1 inserted via gsd-sdk phase.insert (after dataset prereq surfaced during resume)
 
-Progress: [██░░░░░░░░] ~17% (1/6 phases complete; Phase 02 ready to scaffold)
+Progress: [█░░░░░░░░░] ~14% (1/7 phases complete; Phase 01.1 ready to plan)
 
 ## Performance Metrics
 
@@ -44,6 +45,7 @@ Progress: [██░░░░░░░░] ~17% (1/6 phases complete; Phase 02 r
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1. End-to-End Skeleton | 3/3 | — | — |
+| 1.1. Real v0-thin Dataset Build (INSERTED) | 0 | — | — |
 | 2. Small VL Backbone Slice | 0 | — | — |
 | 3. OSM + OCR + Full v0 Training | 0 | — | — |
 | 4. Auto-Georef Bootstrap + v1 Retrain | 0 | — | — |
@@ -58,6 +60,10 @@ Progress: [██░░░░░░░░] ~17% (1/6 phases complete; Phase 02 r
 *Updated after each plan completion.*
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 01.1 inserted after Phase 1: Real v0-thin Dataset Build (URGENT)
 
 ### Decisions
 
@@ -96,7 +102,16 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-14
-Stopped at: Notebook env triage complete on `refactor_paper-notebook` (commit a28b994 — pyproject [notebook]/[paligemma] extras, uv.lock, GPU training playground). Working tree clean. Awaiting user routing for Phase 02 (discuss vs plan vs research).
-Resume file: none (no .continue-here, no incomplete plan, no HANDOFF.json)
-Open question for next action: Phase 02 has no `.planning/phases/02-*` dir or CONTEXT.md yet — recommended first step is `/gsd-discuss-phase 2` to gather context before planning.
+Last session: 2026-05-14 (resume — dataset gap surfaced, Phase 01.1 inserted)
+Stopped at: Phase 01.1 (INSERTED) created via `gsd-sdk query phase.insert 1 "Real v0-thin Dataset Build"`. Directory `.planning/phases/01.1-real-v0-thin-dataset-build/` exists (empty, .gitkeep only). ROADMAP.md updated: detail section auto-inserted between Phase 1 and Phase 2; top-level bullet list manually patched to include Phase 1.1 (the SDK insert handler only emits the detail block, not the bullet). Roadmap evolution entry recorded. Phase goal is to source real Azgaar GeoJSON inputs + the registered-Rumsey subset and run both build pipelines end-to-end so Phase 02 has training-ready data.
+Dataset gap that motivated the insert: no Azgaar GeoJSON inputs anywhere (synthetic pipeline has render/label code but zero raw inputs); no `data/historical/raw/georeferenced/` (Rumsey `search` not yet run for the registered subset; `unregistered_manifest.json` is only the GCP-needed leftover). Smoke fixtures (100 64×64 in `data/renders/`) and `data/toons/` artwork (13 hex-tile classes on GCS) exist but are not training samples.
+Next action: `/gsd-discuss-phase 1.1` or `/gsd-plan-phase 1.1` (no CONTEXT.md or PLAN.md yet — discuss recommended given Azgaar-sourcing strategy and N/M sample targets are unresolved).
+Recent commits (refactor_paper-notebook):
+
+  - 64e9f35 Ran through the notebooks (models appear to work-ish; data pipeline is Phase 2's problem — now Phase 1.5's)
+  - cbdd574 Fix compute_loss to handle resolution mismatch (PaliGemma path)
+  - 40fba9d Wire train_playground PaliGemma cells to load from GCS cache
+  - a28b994 Set up notebook env + add GPU training playground
+
+PaliGemma snapshot staged: `gs://mapclass-training-northeast1/models/paligemma-3b-mix-224/` (10.91 GiB). See memory: [[gcs-bucket]].
+Resume file: none (no .continue-here, no incomplete plan, no HANDOFF.json).

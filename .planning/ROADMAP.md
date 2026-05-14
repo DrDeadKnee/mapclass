@@ -13,6 +13,7 @@ Vertical-MVP roadmap: each phase delivers an end-to-end runnable training+infere
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: End-to-End Skeleton (Synthetic + Mock Backbone)** - Wire the whole pipeline end-to-end on synthetic data with a Mock backbone so the contracts, configs, and entry points exist before any real model lands.
+- [ ] **Phase 1.1: Real v0-thin Dataset Build (INSERTED)** - Source real Azgaar GeoJSON inputs and the registered-Rumsey subset, run both build pipelines end-to-end, and produce a training-ready dataset that Phase 2 can train on.
 - [ ] **Phase 2: Small VL Backbone Slice (Synthetic + Historical)** - Swap Mock → SmolVLM-500M and run a thin per-source-weighted v0 training on synthetic + already-registered-historical so the first real probabilities exist.
 - [ ] **Phase 3: OSM + OCR + Full v0 Training (small backbone)** - Add the OSM road-tile source and the docTR OCR module, then train v0 to completion on all three v0 sources.
 - [ ] **Phase 4: Auto-Georef Bootstrap + v1 Retrain (small backbone)** - Land the auto-georef tool, run the bootstrap to register Rumsey maps, retrain v1 on the expanded dataset, and gate ship with the v0-vs-v1 NLL kill-switch.
@@ -36,6 +37,16 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 **Pitfalls addressed:** PITFALL 3 (loss-weight schema validator at startup), PITFALL 4 (Backbone ABC owns `preprocess()` from day one), PITFALL 5 (deterministic hash-based splits committed once), PITFALL 15 (seeding utility), PITFALL 19 (lockfile non-deferrable). EVAL-03 protocol pre-registration here is the prevention for PITFALL 2 — must land in Phase 1 before MODEL-01 / MODEL-04 training begins. Brownfield concerns addressed: CONCERNS.md 8a (no seeds), 8b (no dataset versioning), 8c (no lockfile), TESTING.md gap-item 6 (loss-weight schema fragility).
+
+### Phase 01.1: Real v0-thin Dataset Build (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 1
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 01.1 to break down)
 
 ### Phase 2: Small VL Backbone Slice (Synthetic + Historical)
 **Goal**: Replace the Mock backbone with `HuggingFaceTB/SmolVLM-500M-Instruct` and produce the first real per-pixel probability maps from a thin v0-style training run on synthetic + already-registered-historical, with per-source class-conditional loss weights wired through.
