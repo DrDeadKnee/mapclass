@@ -30,5 +30,19 @@ dependencies = [
   "tqdm>=4.66",
 ]
 
+[project.optional-dependencies]
+notebook = [
+  "jupyterlab>=4.2",
+  "ipykernel>=6.29",
+  "matplotlib>=3.8",
+]
+# Optional: PaliGemma playground/benchmark (Phase 5 / MODEL-04).
+# `transformers`, `peft`, `bitsandbytes`, `accelerate` are already in main deps;
+# PaliGemma's processor needs sentencepiece. Gated on HuggingFace — run
+# `huggingface-cli login` and accept the license on the model page first.
+paligemma = [
+  "sentencepiece>=0.2",
+]
+
 [tool.setuptools.packages.find]
 include = ["mapclass*"]
