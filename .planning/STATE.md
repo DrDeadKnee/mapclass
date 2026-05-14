@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Session resumed via /gsd-resume-work — confirmed Phase 1 ready to execute, routing to /gsd-execute-phase 1 (waves 1→3).
-last_updated: "2026-05-09T01:22:14.381Z"
-last_activity: 2026-05-09 -- Phase 01 execution started
+status: phase-complete
+stopped_at: Session resumed via /gsd-resume-work — Phase 01 complete (3/3 plans + SUMMARY.md, working tree clean). Ready to transition to Phase 02.
+last_updated: "2026-05-14T00:00:00.000Z"
+last_activity: 2026-05-09 -- Phase 01 plan 03 (EVAL-03 protocol) committed (214f07d)
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_plans: 3
+  percent: 17
 ---
 
 # Project State
@@ -21,16 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** A small, cheap-to-run model that returns reliable per-pixel land-cover + topography probability maps on stylized inputs. Inference must run on a single CPU host or 4–8 GB consumer GPU.
-**Current focus:** Phase 01 — end-to-end-skeleton
+**Current focus:** Phase 02 — Small VL Backbone Slice (SmolVLM-500M swap, first real probabilities)
 
 ## Current Position
 
-Phase: 01 (end-to-end-skeleton) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 01
-Last activity: 2026-05-09 -- Phase 01 execution started
+Phase: 01 (end-to-end-skeleton) — COMPLETE (3/3 plans summarized, working tree clean)
+Next phase: 02 (small VL backbone slice) — not yet scaffolded (no `.planning/phases/02-*` dir, no CONTEXT.md)
+Last activity: 2026-05-09 -- Phase 01 plan 03 EVAL-03 protocol committed (214f07d)
 
-Progress: [███░░░░░░░] ~30% (init + research + roadmap + phase-1 planning; execution pending)
+Progress: [██░░░░░░░░] ~17% (1/6 phases complete; Phase 02 ready to scaffold)
 
 ## Performance Metrics
 
@@ -44,7 +43,7 @@ Progress: [███░░░░░░░] ~30% (init + research + roadmap + pha
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1. End-to-End Skeleton | 0 | — | — |
+| 1. End-to-End Skeleton | 3/3 | — | — |
 | 2. Small VL Backbone Slice | 0 | — | — |
 | 3. OSM + OCR + Full v0 Training | 0 | — | — |
 | 4. Auto-Georef Bootstrap + v1 Retrain | 0 | — | — |
@@ -53,7 +52,8 @@ Progress: [███░░░░░░░] ~30% (init + research + roadmap + pha
 
 **Recent Trend:**
 
-- No plans executed yet.
+- Phase 01 complete: 01-01 (data + config foundation), 01-02 (model layer + CLIs), 01-03 (EVAL-03 pre-registration protocol).
+- Wave 3 of /gsd-execute-phase 1 had a worktree-agent terminate mid-flight (out of usage); orchestrator adopted the agent's authored EVAL-03_protocol.md after byte-identity hash verification. See 01-03-SUMMARY.md "Issues Encountered".
 
 *Updated after each plan completion.*
 
@@ -96,6 +96,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-09
-Stopped at: Session resumed via /gsd-resume-work — confirmed Phase 1 ready to execute, routing to /gsd-execute-phase 1 (waves 1→3).
-Resume file: .planning/phases/01-end-to-end-skeleton/01-01-PLAN.md (wave 1 entry point)
+Last session: 2026-05-14
+Stopped at: Session resumed via /gsd-resume-work — Phase 01 complete (3/3 plans summarized, working tree clean). Awaiting user routing for Phase 02 (discuss vs plan vs research).
+Resume file: none (no .continue-here, no incomplete plan, no HANDOFF.json)
+Open question for next action: Phase 02 has no `.planning/phases/02-*` dir or CONTEXT.md yet — recommended first step is `/gsd-discuss-phase 2` to gather context before planning.
