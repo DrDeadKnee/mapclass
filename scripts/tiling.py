@@ -187,7 +187,13 @@ def tile(map_dir, out_root=None) -> Path:
         # Per-source loss weights propagate UNCHANGED to every pyramid of the
         # map (D-claude-discretion; per-source values locked upstream).
         shutil.copyfile(map_dir / _WEIGHTS_FILE, pdir / _WEIGHTS_FILE)
-        assert (pdir / _WEIGHTS_FILE).read_bytes() == weights_blob
+        # WR-01: a runtime data-integrity check, NOT an assert — `assert`
+        # is stripped under `python -O` (exactly the production batch-build
+        # scenario where weight-propagation corruption matters).
+        if (pdir / _WEIGHTS_FILE).read_bytes() != weights_blob:
+            raise RuntimeError(
+                f"weight propagation corrupted for pyramid {pdir.name}"
+            )
         n += 1
 
     print(f"  tiled {map_dir.name}: {n} pyramid(s) "
