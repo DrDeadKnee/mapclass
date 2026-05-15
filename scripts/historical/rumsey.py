@@ -115,6 +115,32 @@ def _sanitize_id(item_id: str) -> str:
     return re.sub(r"[^\w-]", "_", item_id or "unknown")
 
 
+def _is_valid_geotiff(path: Path) -> bool:
+    """True if ``path`` opens as a GeoTIFF with a CRS and nonzero dims.
+
+    Used to re-validate a resumed ``source.tif`` (WR-02): a run that
+    crashed mid-write leaves a truncated/invalid file that must not be
+    silently accepted as a completed plate.
+    """
+    try:
+        import rasterio  # lazy: keeps offline tests rasterio-free
+    except ImportError:
+        # Cannot validate — fall back to a nonzero-size sanity check.
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
+    try:
+        with rasterio.open(path) as ds:
+            return (
+                ds.crs is not None
+                and ds.width > 0
+                and ds.height > 0
+            )
+    except Exception:
+        return False
+
+
 def _richness_score(item: dict) -> int:
     """
     Score an item by how many useful metadata fields are populated.
@@ -342,9 +368,20 @@ def download_georeferenced(
         plate_dir = output_dir / f"{safe_id}__plate{i}"
         out_path = plate_dir / "source.tif"
         if out_path.exists():
-            print(f"  {item_id} plate{i}: already written, skipping")
-            written.append(out_path)
-            continue
+            # WR-02: a prior run may have crashed mid-write, leaving a
+            # truncated/invalid source.tif. Re-validate (openable + has a
+            # CRS + nonzero dims) before trusting it; if invalid, delete
+            # and re-fetch rather than handing a corrupt GeoTIFF onward.
+            if _is_valid_geotiff(out_path):
+                print(f"  {item_id} plate{i}: already written, skipping")
+                written.append(out_path)
+                continue
+            print(f"  {item_id} plate{i}: existing source.tif invalid — "
+                  f"re-fetching")
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
 
         try:
             orig_w, orig_h = image_size
