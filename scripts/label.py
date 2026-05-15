@@ -104,9 +104,9 @@ def _bbox(features: list) -> tuple[float, float, float, float]:
                         if xy is not None:
                             xs.append(xy[0])
                             ys.append(xy[1])
-                except (TypeError, ValueError, KeyError, IndexError):
+                except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     continue
-        except (TypeError, ValueError, KeyError, IndexError):
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
             continue
     if not xs:
         raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
@@ -178,9 +178,9 @@ def make_label_arrays(geojson_path: str | Path):
                         continue
                     lc_draw.polygon(coords, fill=lc_class)
                     topo_draw.polygon(coords, fill=topo_fill)
-                except (TypeError, ValueError, KeyError, IndexError):
+                except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     continue
-        except (TypeError, ValueError, KeyError, IndexError):
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
             continue
 
     return lc_img, topo_img

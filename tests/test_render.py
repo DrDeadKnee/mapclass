@@ -210,6 +210,41 @@ def test_mixed_malformed_rings_do_not_abort_render(tmp_path):
     assert img.size[0] > 0 and img.size[1] > 0
 
 
+def _non_dict_feature_collection():
+    """A FeatureCollection whose entries are themselves non-dicts (bare
+    string / int) — `(feat or {}).get(...)` raises AttributeError, which
+    must be caught per-feature so a valid sibling still rasterizes
+    (CR-01 residual-edge: per-source resilience contract T-02-09)."""
+    return [
+        "not-a-feature-at-all",
+        12345,
+        {
+            "type": "Feature",
+            "properties": {"biome": 1, "height": 80},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], [50, 0], [50, 50], [0, 50], [0, 0]]],
+            },
+        },
+    ]
+
+
+def test_non_dict_feature_skipped_label(tmp_path):
+    """A non-dict FeatureCollection entry is skipped (AttributeError caught),
+    not an abort of the whole source; the valid sibling still draws."""
+    path = _write_geojson(tmp_path, _non_dict_feature_collection())
+    lc_img, topo_img = make_label_arrays(path)
+    assert lc_img.size == topo_img.size
+    assert min(lc_img.getdata()) < 255  # valid sibling rasterized
+
+
+def test_non_dict_feature_skipped_render(tmp_path):
+    """render_one survives non-dict feature entries (CR-01 residual edge)."""
+    path = _write_geojson(tmp_path, _non_dict_feature_collection())
+    img = render_one(path, "flat")
+    assert img.size[0] > 0 and img.size[1] > 0
+
+
 def test_malformed_point_does_not_corrupt_bbox(tmp_path):
     """WR-01: an injected malformed point must not alter the canvas bounds.
 

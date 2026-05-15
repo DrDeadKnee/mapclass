@@ -162,9 +162,9 @@ def _bbox(features):
                         if xy is not None:
                             xs.append(xy[0])
                             ys.append(xy[1])
-                except (TypeError, ValueError, KeyError, IndexError):
+                except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     continue
-        except (TypeError, ValueError, KeyError, IndexError):
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
             continue
     if not xs:
         raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
@@ -211,9 +211,9 @@ def render_style(features, min_x, min_y, width, height, style: str) -> Image.Ima
                         draw.polygon(
                             coords, outline=border_color, width=border_width
                         )
-                except (TypeError, ValueError, KeyError, IndexError):
+                except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     continue
-        except (TypeError, ValueError, KeyError, IndexError):
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
             continue
 
     if style == "satellite":
