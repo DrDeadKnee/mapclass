@@ -25,14 +25,18 @@ synthetic maps.
 
 - ✓ Phase 1: PaliGemma-3B LoRA fine-tune on ~120 hex tile PNGs across 9 land cover
   and 3 topography classes, augmented to ~4,760 samples — `scripts/finetune_paligemma.py`
+- ✓ Phase 2: Labelled pixel-pair dataset from three source streams — historical
+      (Rumsey via Allmaps→IIIF→GeoTIFF; PaliGemma-semi-auto + manual fallback
+      deferred to v2 as GEOREF-V2), synthetic (Azgaar+Pillow, per-(source×style),
+      uniform-1.0 weights, frozen seeded stratified split at N=100 — EVAL-01),
+      satellite (Sentinel-2/WorldCover/DEM from S3, balance-tilt weights), unified
+      by a shared nested-pyramid tiler — Validated in Phase 2 (5/5 ROADMAP criteria,
+      offline; online integration gate tracked in 02-HUMAN-UAT.md)
 
 ### Active
 
 <!-- Current scope. Building toward these. -->
 
-- [ ] Phase 2: Build the labelled pixel-pair dataset from historical illustrated
-      maps (Rumsey + Allmaps + PaliGemma fallback), synthetic illustrated maps
-      (Azgaar + Pillow), and satellite-derived imagery (ESA WorldCover + Copernicus DEM)
 - [ ] Phase 3: Build the dense semantic segmentation pipeline on the Phase-1
       SigLIP encoder with land-cover + topography heads and coarse-to-fine inference
 - [ ] Phase 4: Fine-tune segmentation end-to-end, evaluate on held-out synthetic
@@ -206,4 +210,4 @@ Format mirrors what a future ADR promotion would look like.
 | HuggingFace upload as the only deliverable; no polygonisation | Keeps scope contained — region delineation is genuinely a separate problem | — Pending |
 
 ---
-*Last updated: 2026-05-14 after bootstrap from intel ingest*
+*Last updated: 2026-05-15 — Phase 2 complete (three-source pixel-label dataset pipeline + shared tiler)*
