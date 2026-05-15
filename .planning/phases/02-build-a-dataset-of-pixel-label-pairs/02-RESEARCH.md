@@ -597,14 +597,20 @@ user approval in plan-01.
 | A4 | Synthetic per-map = (Azgaar source × style) is the right multiplexing | Pitfall 6 | MEDIUM — affects training data volume by 3×. **Needs user approval in plan-01.** |
 | A5 | Standard `pystac-client` over raw `requests` to the STAC API is the right call | Stack alternatives | LOW — easy to switch; both work |
 | A6 | The Allmaps `lookup()` should be extended to return ALL annotations, not items[0] | Pitfall 3 | HIGH — currently silently drops most plates of atlases. **Plan-01 should fix.** |
-| A7 | Synthetic dataset target size of "at least 50 Azgaar source maps before splitting" gives 7-8 maps per template for a stratified 15% hold-out | Synthetic sizing (research Q8) | LOW — easy to add more maps |
+| A7 | Synthetic dataset target size — **RESOLVED with user 2026-05-15: N=100 Azgaar source maps for v1** (~15–16 maps/template across ~12 templates → robust stratified 15% hold-out). Build may revise up. | Synthetic sizing (research Q8) | RESOLVED — user-confirmed N=100 |
 
 **A6 is particularly load-bearing** — without it, the historical pipeline yields ~337 maps
 instead of ~10,455. Surface to user as part of plan-01.
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Dispositions recorded 2026-05-15 during `/gsd-plan-phase 2`. Q1–Q3 resolve as
+> decide-at-execution / Claude's-discretion (legitimately not blocking). Q4 and Q5
+> were surfaced to the user and confirmed.
 
 1. **How many Allmaps-georeferenced Rumsey maps fall in the 1500-1700 LUNA-Type=Map subset?**
+   - **RESOLVED: decide-at-execution.** Empirically discoverable; the D-05 drop-count
+     instrumentation (plan 02-02) surfaces this on the first run. Not a planning blocker.
    - What we know: 10,455 Rumsey canvases in Allmaps; LUNA can filter by year/type.
    - What's unclear: the *intersection* — Allmaps doesn't surface LUNA's date metadata in
      the dump; LUNA doesn't surface Allmaps coverage.
@@ -624,6 +630,8 @@ instead of ~10,455. Surface to user as part of plan-01.
      gap might actually help.
    - Recommendation: use `visual` for v1. Reserve "switch to band-stacked B04/B03/B02 if
      training surfaces a saturation/clipping issue" as a follow-up.
+   - **RESOLVED: Claude's discretion → `visual` TCI for v1** (band-stack switch is a
+     documented follow-up, not a Phase 2 blocker). Baked into plan 02-04.
 
 3. **Should the multi-scale pyramid be stored as per-pyramid subdirectories, flat naming, or
    a sqlite index?**
@@ -634,17 +642,22 @@ instead of ~10,455. Surface to user as part of plan-01.
      listing the 21 file paths and parent→child indices.** Filesystem-native, easy to debug,
      easy to delete a broken pyramid, easy to ship via a tar/rsync. Add a single top-level
      `index.parquet` if the DataLoader needs O(1) lookup; that's a Phase 3 concern.
+   - **RESOLVED: Claude's discretion (CONTEXT D-Storage)** → per-pyramid subdirectories
+     with one `pyramid.json` per subdir. Baked into plan 02-05.
 
 4. **Should `historical/allmaps.py:lookup()` return ALL items or just items[0]?**
-   - See Pitfall 3 / Assumption A6. **Surface to user in plan-01.**
+   - See Pitfall 3 / Assumption A6.
+   - **RESOLVED with user 2026-05-15: return ALL annotations** (A6 approved). Baked into
+     plan 02-01. Expected historical yield ~10,455 (not ~337).
 
 5. **What's the synthetic dataset target size?**
    - SPEC and CONTEXT are silent. Phase-1 fine-tune used ~4760 augmented samples from 120
      base tiles. For Phase 2 segmentation training (a much harder task), reasonable target
      is at least 50-100 Azgaar source maps × 3 styles × ~1344 pyramid tiles = 200-400k tiles.
-     Plenty for segmentation. **Recommendation: target N=50 Azgaar source maps for v1, allow
-     planning to revise up if the user wants more diversity.** This gives 7-8 maps per
-     Azgaar template (with ~12 templates known) — enough for a stratified 15% hold-out.
+   - **RESOLVED with user 2026-05-15: N=100 Azgaar source maps for v1** (A7). This yields
+     ~15–16 maps per template across ~12 templates — a robust stratified 15% hold-out for
+     EVAL-01. The split logic is correct at any N; N is tunable up during execution
+     without re-opening this question. Baked into plan 02-03.
 
 ## Environment Availability
 
