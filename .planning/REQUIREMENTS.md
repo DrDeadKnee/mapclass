@@ -72,6 +72,19 @@ Deferred to future release. Tracked but not in the current roadmap.
   track segmentation accuracy and run GradCAM / attention rollout at each stage
   to localise the domain gap inside the network
 
+### Georeferencing (deferred from Phase 2)
+
+- **GEOREF-V2**: Georeferencing of Allmaps-missing historical maps, deferred to
+  v2. Covers both (a) the PaliGemma-driven semi-automatic registration path —
+  dense terrain predictions from the Phase-1 fine-tune, cross-correlated against
+  a WorldCover + Copernicus DEM reference grid for rigid alignment, then refined
+  with thin-plate-spline warping anchored on coastlines / mountain ranges /
+  major water bodies — and (b) the manual MapWarper / QGIS GCP placement
+  fallback. In v1, unregistered maps are emitted only to
+  `unregistered_manifest.json`; the locked precedence in
+  `DECISION-georeferencing-pipeline` survives — steps 3 and 4 are simply not
+  implemented in v1.
+
 ### Synthetic Calibration
 
 - **SYN-01**: Calibrate Azgaar synthetic-height thresholds against SRTM
