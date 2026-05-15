@@ -119,7 +119,7 @@ Plans:
 - [x] 03-01-PLAN.md — Wave 0: timm + transformers-path resolution; seg test infra (mini-pyramid fixture + 6 scaffolds)
 - [x] 03-02-PLAN.md — Backbone protocol + SigLIP/DINOv2/Swin + Variant-B widened 15-ch patch-embed (D-05/D-03a)
 - [x] 03-03-PLAN.md — PyramidDataset over Phase-2 tree, train/-only, weights surfaced unchanged (D-06)
-- [ ] 03-04-PLAN.md — Shared UPerNet PPM+FPN conv decoder + two thin task heads (D-01/D-02)
+- [x] 03-04-PLAN.md — Shared UPerNet PPM+FPN conv decoder + two thin task heads (D-01/D-02)
 - [ ] 03-05-PLAN.md — SegModel assembly (both D-03a variants) + recursive c2f orchestrator + smoke (D-03/D-04)
 **Status**: not_started
 
