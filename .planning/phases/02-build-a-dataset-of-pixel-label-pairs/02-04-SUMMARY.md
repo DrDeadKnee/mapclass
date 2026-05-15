@@ -2,76 +2,185 @@
 phase: 02-build-a-dataset-of-pixel-label-pairs
 plan: 04
 subsystem: satellite-pipeline
-status: paused-at-checkpoint
-tags: [satellite, sentinel-2, stac, cog, coverage-scan]
+status: complete
+tags: [satellite, sentinel-2, stac, cog, coverage-scan, worldcover]
 requires:
   - 02-01
-  - 02-02 (scripts/historical/georef.py::write_georeferenced_geotiff — confirmed present)
+  - 02-02 (scripts/historical/georef.py::write_georeferenced_geotiff — reused verbatim)
 provides:
-  - scripts/satellite/ package (pending — gated by checkpoint)
+  - scripts/satellite/ package (stac, fetch, coverage, weights)
+  - scripts/build_satellite_dataset.py (coverage-scan / search / build)
 affects:
-  - requirements.txt (pending)
+  - requirements.txt (pystac-client>=0.9 added)
 tech-stack:
-  added: []
-  patterns: []
+  added: [pystac-client>=0.9]
+  patterns:
+    - anonymous public-S3 via AWS_NO_SIGN_REQUEST + GDAL VSI-CURL (no boto3)
+    - COG byte-range windowed read (rasterio.windows.Window) — never full-scene
+    - typed lookup error + exponential backoff (StacLookupError, mirrors AllmapsLookupError)
+    - cached one-shot coarse-WorldCover summary (mandatory sidecar cache)
+    - per-reason drop counter (D-13, parallels D-05)
 key-files:
-  created: []
-  modified: []
-decisions: []
+  created:
+    - scripts/satellite/__init__.py
+    - scripts/satellite/weights.py
+    - scripts/satellite/stac.py
+    - scripts/satellite/fetch.py
+    - scripts/satellite/coverage.py
+    - scripts/build_satellite_dataset.py
+    - tests/test_coverage.py
+    - tests/integration/test_stac_online.py
+    - tests/integration/test_satellite_online.py
+  modified:
+    - requirements.txt
+    - tests/test_stac.py
+    - tests/test_satellite.py
+decisions:
+  - "Satellite loss weights: balance-tilt (checkpoint:decision RESOLVED) — water/trees 0.6, cropland/built_up/flooded_wetland 1.3, others 1.0, SATELLITE_TOPO_WEIGHT 1.0"
+  - "Rule 1 fix: reproject the windowed UTM read to EPSG:4326 before the shared georef writer (which hard-codes EPSG:4326) so make_labels' WorldCover/DEM alignment stays geographically correct"
 metrics:
-  duration: in-progress
-  completed: null
+  duration: ~1 session
+  completed: 2026-05-15
 ---
 
-# Phase 02 Plan 04: Satellite Pipeline Summary (PAUSED AT CHECKPOINT)
+# Phase 02 Plan 04: Satellite Pipeline Summary
 
-One-liner: Satellite source family (class-diversity coverage scan + cloud-filtered Sentinel-2 L2A STAC + COG byte-range RGB fetch) — execution paused at the plan's first task, a BLOCKING `checkpoint:decision` for per-source loss-weight value approval.
+One-liner: Sentinel-2 L2A satellite source family — a cached class-diversity
+coarse-WorldCover region picker (D-14) feeds a cloud-filtered STAC search whose
+lowest-cloud scene is fetched as a 4096-px RGB COG byte-range window, then
+labelled with the reused historical pipeline and the approved balance-tilt
+satellite loss weights.
 
 ## Execution Status
 
-The plan's **first task** is a blocking `checkpoint:decision` (Checkpoint: Approve per-source loss-weight values). It gates all three downstream implementation tasks (Task 1 weights.py needs the approved per-class floats; Tasks 2-3 depend on Task 1). Auto-mode is OFF (`workflow.auto_advance=false`, `workflow._auto_chain_active=false`), so the executor must STOP and collect the human decision rather than self-approve. No implementation work could be started before the decision.
-
-## Pre-flight verification completed
-
-- Worktree branch `worktree-agent-a51972f7f46ae438c` confirmed; base reset to `ae5bdbe` (Wave 1 complete).
-- Confirmed shared reusable symbols exist verbatim in the base (no fork needed downstream):
-  - `scripts/historical/georef.py:43` `write_georeferenced_geotiff(rgb_array, affine, out_path)`
-  - `scripts/historical/label.py:95` `make_labels(map_geotiff, output_dir)`
-  - `scripts/historical/label.py:40` `HISTORICAL_LC_WEIGHTS` (9 keys), `:51` `HISTORICAL_TOPO_WEIGHT=1.0`
-  - `scripts/historical/worldcover.py` `WC_REMAP` (:42), `_tile_origins` (:67), `AWS_NO_SIGN_REQUEST` (:36)
-- Locked `sample_weights.json` shape captured from `label.py:139-144`:
-  `{"land_cover_weights": <9-key dict>, "topography_weight": <float>, "source": "<src>", "map_file": <name>}`
-- The 9 locked `LANDCOVER_CLASSES` keys (must match exactly in `SATELLITE_LC_WEIGHTS`):
-  `water, trees, shrubland, grassland, cropland, built_up, bare_sparse, flooded_wetland, snow_ice`
-
-## Checkpoint Decision Requested
-
-**Approve the satellite per-source loss-weight values** for `SATELLITE_LC_WEIGHTS` (same 9 keys as `HISTORICAL_LC_WEIGHTS`) plus `SATELLITE_TOPO_WEIGHT`. The dict shape and the `topography_weight` slot are locked; only the per-class floats need sign-off. WorldCover labels are contemporaneous with the satellite imagery (no temporal drift), so the historical down-weighting does NOT apply.
-
-Options presented to the user:
-
-- **balance-tilt** (recommended, implements CONTEXT/PROJECT.md guidance):
-  `trees 0.6, water 0.6, cropland 1.3, built_up 1.3, flooded_wetland 1.3, shrubland 1.0, grassland 1.0, bare_sparse 1.0, snow_ice 1.0`; `SATELLITE_TOPO_WEIGHT 1.0`
-- **uniform**: all 9 classes `1.0`; `SATELLITE_TOPO_WEIGHT 1.0` (defer balancing to Phase 3/4 sampler)
-- Or: user supplies explicit per-class floats.
-
-The executor did NOT guess or self-approve. No weights code written.
+All implementation tasks complete. The plan's first task (Task 0) was a
+BLOCKING `checkpoint:decision` for the per-source loss-weight values; it was
+presented to the user and **RESOLVED as `balance-tilt`**. This continuation
+agent resumed at Task 1 and executed Tasks 1-3 to completion.
 
 ## Tasks Completed
 
-None — the gating checkpoint is the first task.
-
 | Task | Name | Status | Commit |
 | ---- | ---- | ------ | ------ |
-| 0 | Checkpoint: Approve per-source loss-weight values | AWAITING DECISION | n/a |
-| 1 | Create satellite/ package — stac.py, fetch.py, weights.py | blocked by checkpoint | — |
-| 2 | Create coverage.py — class-diversity region picker (D-14) | blocked by checkpoint | — |
-| 3 | build_satellite_dataset.py — sub-commands (D-13 drop counter) | blocked by checkpoint | — |
+| 0 | Checkpoint: approve per-source loss weights | RESOLVED — balance-tilt | (decision, pre-resume) |
+| 1 | satellite/ package — stac.py, fetch.py, weights.py | done | `8387e65` |
+| 2 | coverage.py — class-diversity region picker (D-14) | done | `e6ccaba` |
+| 3 | build_satellite_dataset.py — sub-commands (D-13) | done | `aa2b54f` |
+
+## Approved Checkpoint Decision
+
+**balance-tilt** (locked — hard-coded verbatim into `scripts/satellite/weights.py`):
+
+| class | weight | rationale |
+|-------|--------|-----------|
+| water | 0.6 | globally over-represented — discount |
+| trees | 0.6 | globally over-represented — discount |
+| shrubland | 1.0 | neutral |
+| grassland | 1.0 | neutral |
+| cropland | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
+| built_up | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
+| bare_sparse | 1.0 | neutral |
+| flooded_wetland | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
+| snow_ice | 1.0 | neutral |
+
+`SATELLITE_TOPO_WEIGHT = 1.0`. WorldCover labels are contemporaneous with the
+imagery (no temporal-drift discount, unlike the historical source). The
+`sample_weights.json` shape is the locked 4-key contract
+(`land_cover_weights` / `topography_weight` / `source` / `map_file`) with
+`source == "satellite"`.
+
+## What Was Built
+
+- **`scripts/satellite/weights.py`** — the locked-shape satellite weights dict
+  + `write_sample_weights(output_dir, map_file)`. Hard-codes the approved
+  balance-tilt floats; the rationale is recorded in the module docstring.
+- **`scripts/satellite/stac.py`** — `find_lowest_cloud_scene(bbox,
+  datetime_range, max_cloud=10)` over the Element84 Earth Search v1 API:
+  `query={"eo:cloud_cover": {"lt": max_cloud}}` on `sentinel-2-l2a`, returns
+  the min-cloud item or `None`; typed `StacLookupError`; retry/backoff copied
+  from `allmaps.py`; `AWS_NO_SIGN_REQUEST` set module-top.
+- **`scripts/satellite/fetch.py`** — `fetch_visual_window(item, dst_path,
+  dst_window_px=4096)` reads a centred `rasterio.windows.Window` of the scene's
+  `visual` TCI asset via COG byte-range (never the full ~600 MB scene, threat
+  T-02-10), reprojects to EPSG:4326, and writes via the **single shared**
+  `historical.georef.write_georeferenced_geotiff` (no fork — W-1). Missing /
+  unreadable asset → `None` (threat T-02-11).
+- **`scripts/satellite/coverage.py`** — `build_summary()` builds a one-shot
+  per-1° WorldCover class-count summary (mandatory JSON sidecar cache;
+  reloaded if present), reusing `historical.worldcover._tile_origins` and
+  `WC_REMAP` verbatim. `pick_regions(n, seed)` ranks cells by Shannon entropy
+  with a multiplicative up-weight on cropland/built_up/flooded_wetland (D-14)
+  and a seeded deterministic tie-break; each region carries a
+  latitude-appropriate season (`season_for_latitude`, Pitfall 4).
+- **`scripts/build_satellite_dataset.py`** — `coverage-scan` / `search` /
+  `build` on the `build_historical_dataset.py` argparse + threadpool scaffold.
+  `search` drop-counts `no_qualifying_scene` / `stac_search_failed`; `build`
+  drop-counts `fetch_failed`; both print the D-13 summary with a loud <50%
+  warning. The `build` worker reuses `historical.label.make_labels` **verbatim**
+  then writes the satellite `sample_weights.json`. Region ids are sanitized
+  (non-`[\w-]` → `_`) before the path join (threat T-02-12).
+
+## Reuse (verbatim, no fork)
+
+- `historical.georef.write_georeferenced_geotiff` — imported directly by
+  `fetch.py` (exactly one import, no local writer def — W-1 verified).
+- `historical.label.make_labels` — called verbatim by the build worker; zero
+  new label or GeoTIFF-writer code.
+- `historical.worldcover._tile_origins` / `WC_REMAP` / `_tile_name` / base-URL
+  constants — reused by `coverage.py`.
+- `git diff scripts/historical/` is empty for this plan — the historical
+  package was not modified.
 
 ## Deviations from Plan
 
-None — execution paused at the plan-defined blocking checkpoint before any implementation.
+### Auto-fixed Issues
 
-## Resume Instructions
+**1. [Rule 1 - Bug] Reproject the windowed UTM read to EPSG:4326 before the shared writer**
+- **Found during:** Task 1 (fetch.py)
+- **Issue:** Sentinel-2 scenes are in a UTM CRS, but the shared Plan-02
+  `write_georeferenced_geotiff` hard-codes `crs=EPSG:4326`. Passing the raw
+  UTM `window_transform` to it would label UTM coordinates as WGS84, corrupting
+  `make_labels`' downstream WorldCover/DEM bbox alignment (D-03).
+- **Fix:** `fetch.py` now reprojects the 4096-px window (and only the window —
+  never the full scene) from the scene CRS to EPSG:4326 via
+  `rasterio.warp.reproject` + `calculate_default_transform`, then passes the
+  WGS84 transform/array to the unmodified shared writer. The writer is still
+  reused verbatim (no fork); the fix lives entirely in `fetch.py`.
+- **Files modified:** scripts/satellite/fetch.py
+- **Commit:** `8387e65`
 
-A fresh executor agent should be spawned with the approved weight option (or explicit per-class floats) supplied in its prompt. It resumes at **Task 1**, hard-coding the approved values into `scripts/satellite/weights.py::SATELLITE_LC_WEIGHTS` / `SATELLITE_TOPO_WEIGHT`, then proceeds through Tasks 1-3 as written.
+## Threat Mitigations Applied
+
+- **T-02-10** (full-scene download DoS): `fetch.py` reads only a centred
+  `Window`; offline test asserts the centred-window math and clamping.
+- **T-02-11** (malformed item crashes batch): missing/unreadable `visual`
+  asset → `None`; the threadpool worker returns status instead of raising.
+- **T-02-12** (region-id path traversal): `_sanitize` replaces non-`[\w-]`
+  with `_` before the `out_dir / safe` join.
+
+## Verification
+
+- `pytest tests/test_stac.py tests/test_satellite.py tests/test_coverage.py -q
+  --ignore=tests/integration` → 17 passed.
+- Full quick suite `pytest tests/ -q --ignore=tests/integration` → 43 passed,
+  2 skipped (the 2 skips are unrelated Wave-0 skeletons — `test_tiling.py` and
+  another future-plan skeleton — not introduced or owned by this plan).
+- `python -c "import ast; ast.parse(open('scripts/build_satellite_dataset.py').read())"`
+  succeeds; `--help` parses.
+- W-1: exactly one `from historical.georef import write_georeferenced_geotiff`
+  in `scripts/satellite/`, no local writer def.
+- Integration online tests added (`tests/integration/test_stac_online.py`,
+  `tests/integration/test_satellite_online.py`) — `@pytest.mark.integration`,
+  run as the phase gate against the live STAC API / S3.
+
+## Known Stubs
+
+None. All modules are wired end-to-end; the only placeholder-shaped value is
+the empty `_SceneItem.properties = {}` in the build orchestrator, which is an
+intentional minimal STAC-item stand-in (the manifest already carries the
+resolved `visual_href`; `properties` is unused on the build path).
+
+## Self-Check: PASSED
+
+All 9 created files exist on disk; all 3 task commits (`8387e65`, `e6ccaba`,
+`aa2b54f`) are present in git history. No missing items.
