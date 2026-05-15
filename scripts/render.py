@@ -83,26 +83,58 @@ BACKGROUND = {
 }
 
 
+def _rings(geom):
+    """Coordinate rings of a Polygon/MultiPolygon; ``[]`` for anything
+    else / malformed so callers skip rather than crash (CR-03)."""
+    if not isinstance(geom, dict):
+        return []
+    gtype = geom.get("type")
+    coords = geom.get("coordinates")
+    if coords is None:
+        return []
+    try:
+        if gtype == "Polygon":
+            return coords
+        if gtype == "MultiPolygon":
+            return [ring for poly in coords for ring in poly]
+    except TypeError:
+        return []
+    return []
+
+
+# Decompression-bomb-analogue guard for the synthetic render path
+# (threat parity with T-02-04 / label._MAX_CANVAS_DIM).
+_MAX_CANVAS_DIM = 20000
+
+
+def _canvas_dims(min_x, min_y, max_x, max_y):
+    """Return a validated (width, height), guarding degenerate/huge canvases."""
+    width = int(max_x - min_x) + 1
+    height = int(max_y - min_y) + 1
+    if width <= 0 or height <= 0:
+        raise ValueError(f"degenerate canvas {width}x{height} from feature bbox")
+    if width > _MAX_CANVAS_DIM or height > _MAX_CANVAS_DIM:
+        raise ValueError(
+            f"canvas {width}x{height} exceeds max {_MAX_CANVAS_DIM}px "
+            f"(pathological coordinates — refusing to allocate)"
+        )
+    return width, height
+
+
 def _bbox(features):
     xs, ys = [], []
     for feat in features:
-        geom = feat["geometry"]
-        rings = (
-            geom["coordinates"]
-            if geom["type"] == "Polygon"
-            else [ring for poly in geom["coordinates"] for ring in poly]
-        )
-        for ring in rings:
-            for x, y in ring:
-                xs.append(x)
-                ys.append(y)
+        geom = (feat or {}).get("geometry") or {}
+        if geom.get("type") not in ("Polygon", "MultiPolygon"):
+            continue
+        for ring in _rings(geom):
+            for pt in ring:
+                if len(pt) >= 2:
+                    xs.append(pt[0])
+                    ys.append(pt[1])
+    if not xs:
+        raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
     return min(xs), min(ys), max(xs), max(ys)
-
-
-def _rings(geom):
-    if geom["type"] == "Polygon":
-        return geom["coordinates"]
-    return [ring for poly in geom["coordinates"] for ring in poly]
 
 
 def render_style(features, min_x, min_y, width, height, style: str) -> Image.Image:
@@ -114,13 +146,16 @@ def render_style(features, min_x, min_y, width, height, style: str) -> Image.Ima
     draw = ImageDraw.Draw(img)
 
     for feat in features:
-        props = feat["properties"]
-        h = int(props["height"])
-        biome = int(props["biome"])
+        props = (feat or {}).get("properties") or {}
+        try:
+            h = int(props["height"])
+            biome = int(props["biome"])
+        except (KeyError, TypeError, ValueError):
+            continue  # skip malformed feature (CR-03), do not abort source
         lc_idx = h_to_landcover(h, biome)
         fill = palette[lc_idx]
 
-        for ring in _rings(feat["geometry"]):
+        for ring in _rings((feat or {}).get("geometry") or {}):
             coords = [(x - min_x, y - min_y) for x, y in ring]
             if len(coords) < 3:
                 continue
@@ -147,8 +182,7 @@ def render_one(geojson_path: str | Path, style: str) -> Image.Image:
     features = data["features"]
 
     min_x, min_y, max_x, max_y = _bbox(features)
-    width = int(max_x - min_x) + 1
-    height = int(max_y - min_y) + 1
+    width, height = _canvas_dims(min_x, min_y, max_x, max_y)
 
     if style not in PALETTES:
         raise ValueError(f"Unknown style '{style}'")
@@ -165,8 +199,7 @@ def render_map(geojson_path: str | Path, output_dir: str | Path, styles=("flat",
     features = data["features"]
 
     min_x, min_y, max_x, max_y = _bbox(features)
-    width = int(max_x - min_x) + 1
-    height = int(max_y - min_y) + 1
+    width, height = _canvas_dims(min_x, min_y, max_x, max_y)
 
     for style in styles:
         if style not in PALETTES:

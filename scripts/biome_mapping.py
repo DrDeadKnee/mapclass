@@ -88,10 +88,16 @@ def normalize_land_h(h: int) -> float:
 
 
 def h_to_landcover(h: int, biome: int) -> int:
-    """Map (h, biome) → canonical land cover class index."""
+    """Map (h, biome) → canonical land cover class index.
+
+    Azgaar has added biome IDs before, so an out-of-range / unknown biome
+    falls back to ``bare_sparse`` rather than raising ``KeyError`` and
+    aborting the whole source (CR-03, per-source resilience T-02-09).
+    """
     if h < H_SEA_LEVEL:
         return LANDCOVER_IDX["water"]
-    return LANDCOVER_IDX[BIOME_TO_LANDCOVER_NAME[biome]]
+    name = BIOME_TO_LANDCOVER_NAME.get(biome, "bare_sparse")
+    return LANDCOVER_IDX[name]
 
 
 def h_to_topo(h: int) -> int | None:

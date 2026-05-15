@@ -29,28 +29,53 @@ from synthetic_weights import write_sample_weights
 NODATA = 255  # fill value for pixels not covered by any cell (shouldn't occur)
 WATER_TOPO = 255  # sentinel: water cells have no topography class
 
-
-def _bbox(features: list) -> tuple[float, float, float, float]:
-    """Return (min_x, min_y, max_x, max_y) over all polygon rings."""
-    xs, ys = [], []
-    for feat in features:
-        geom = feat["geometry"]
-        rings = (
-            geom["coordinates"]
-            if geom["type"] == "Polygon"
-            else [ring for poly in geom["coordinates"] for ring in poly]
-        )
-        for ring in rings:
-            for x, y in ring:
-                xs.append(x)
-                ys.append(y)
-    return min(xs), min(ys), max(xs), max(ys)
+# Decompression-bomb-analogue guard for the synthetic path (threat parity
+# with T-02-04): refuse to allocate a canvas larger than this on any edge.
+_MAX_CANVAS_DIM = 20000
 
 
 def _rings(geom: dict) -> list[list[tuple[float, float]]]:
-    if geom["type"] == "Polygon":
-        return geom["coordinates"]
-    return [ring for poly in geom["coordinates"] for ring in poly]
+    """Return the coordinate rings of a Polygon/MultiPolygon geometry.
+
+    Returns ``[]`` for any other / malformed geometry so callers can skip
+    the feature rather than crash (CR-03).
+    """
+    if not isinstance(geom, dict):
+        return []
+    gtype = geom.get("type")
+    coords = geom.get("coordinates")
+    if coords is None:
+        return []
+    try:
+        if gtype == "Polygon":
+            return coords
+        if gtype == "MultiPolygon":
+            return [ring for poly in coords for ring in poly]
+    except TypeError:
+        return []
+    return []
+
+
+def _bbox(features: list) -> tuple[float, float, float, float]:
+    """Return (min_x, min_y, max_x, max_y) over all usable polygon rings.
+
+    Non-Polygon/MultiPolygon, missing, or malformed geometries are skipped
+    rather than crashing. Raises ``ValueError`` only when NO feature has a
+    usable polygon (CR-03).
+    """
+    xs, ys = [], []
+    for feat in features:
+        geom = (feat or {}).get("geometry") or {}
+        if geom.get("type") not in ("Polygon", "MultiPolygon"):
+            continue
+        for ring in _rings(geom):
+            for pt in ring:
+                if len(pt) >= 2:
+                    xs.append(pt[0])
+                    ys.append(pt[1])
+    if not xs:
+        raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def make_label_arrays(geojson_path: str | Path):
@@ -68,6 +93,15 @@ def make_label_arrays(geojson_path: str | Path):
     min_x, min_y, max_x, max_y = _bbox(features)
     width = int(max_x - min_x) + 1
     height = int(max_y - min_y) + 1
+    if width <= 0 or height <= 0:
+        raise ValueError(
+            f"degenerate canvas {width}x{height} from feature bbox"
+        )
+    if width > _MAX_CANVAS_DIM or height > _MAX_CANVAS_DIM:
+        raise ValueError(
+            f"canvas {width}x{height} exceeds max {_MAX_CANVAS_DIM}px "
+            f"(pathological coordinates — refusing to allocate)"
+        )
 
     lc_img = Image.new("L", (width, height), NODATA)
     topo_img = Image.new("L", (width, height), NODATA)
@@ -75,15 +109,20 @@ def make_label_arrays(geojson_path: str | Path):
     topo_draw = ImageDraw.Draw(topo_img)
 
     for feat in features:
-        props = feat["properties"]
-        biome = int(props["biome"])
-        h = int(props["height"])
+        props = (feat or {}).get("properties") or {}
+        try:
+            biome = int(props["biome"])
+            h = int(props["height"])
+        except (KeyError, TypeError, ValueError):
+            # Missing/non-numeric biome|height — skip this feature, do not
+            # abort the whole source (CR-03).
+            continue
 
         lc_class = h_to_landcover(h, biome)
         topo_class = h_to_topo(h)
         topo_fill = topo_class if topo_class is not None else WATER_TOPO
 
-        for ring in _rings(feat["geometry"]):
+        for ring in _rings((feat or {}).get("geometry") or {}):
             # Shift coordinates so origin is (0, 0)
             coords = [(x - min_x, y - min_y) for x, y in ring]
             if len(coords) < 3:
