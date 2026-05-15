@@ -139,7 +139,16 @@ def _parse_annotation(ann: dict) -> Optional[dict]:
     image_id = source.get("id")
     width = source.get("width")
     height = source.get("height")
-    image_size = (int(width), int(height)) if width and height else None
+    # WR-05: require strictly-positive integer dimensions. A truthy-but-
+    # zero value (e.g. the string "0", or 0.0) must NOT pass — otherwise
+    # the downstream scale_gcps divides by orig_w/orig_h and raises
+    # ZeroDivisionError, which is then miscounted as ``download_failed``
+    # instead of correctly classified ``gcps_insufficient``.
+    try:
+        iw, ih = int(width), int(height)
+        image_size = (iw, ih) if iw > 0 and ih > 0 else None
+    except (TypeError, ValueError):
+        image_size = None
 
     mask_svg = None
     selector = target.get("selector") or {}
