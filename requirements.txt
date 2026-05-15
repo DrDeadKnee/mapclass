@@ -8,3 +8,5 @@ transformers>=4.41
 peft>=0.10
 accelerate
 bitsandbytes
+pytest>=8
+pytest-mock>=3
