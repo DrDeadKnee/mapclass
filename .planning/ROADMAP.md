@@ -86,8 +86,8 @@ consumes the Phase-1 fine-tuned PaliGemma)
 **Plans**: 5 plans
 Plans:
 - [x] 02-01-PLAN.md — Wave 0: pytest framework, Allmaps multi-annotation fix (A6), scope-deferral doc edits
-- [ ] 02-02-PLAN.md — Historical pipeline: Allmaps→IIIF→GeoTIFF (D-01..D-05), v2 manifest
-- [ ] 02-03-PLAN.md — Synthetic pipeline: per-(source×style) output, weights, frozen stratified split (D-15..D-18, EVAL-01)
+- [x] 02-02-PLAN.md — Historical pipeline: Allmaps→IIIF→GeoTIFF (D-01..D-05), v2 manifest
+- [x] 02-03-PLAN.md — Synthetic pipeline: per-(source×style) output, weights, frozen stratified split (D-15..D-18, EVAL-01)
 - [ ] 02-04-PLAN.md — Satellite pipeline: coverage scan + STAC + COG fetch (D-10..D-14)
 - [ ] 02-05-PLAN.md — Shared nested-pyramid tiler + integration into all 3 builds (D-06..D-09)
 **Status**: in_progress
