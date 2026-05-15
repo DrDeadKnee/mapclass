@@ -2,15 +2,16 @@
 phase: 02-build-a-dataset-of-pixel-label-pairs
 plan: 03
 subsystem: synthetic-pipeline
-status: paused-at-checkpoint
+status: complete
 tags: [synthetic, azgaar, eval-01, stratified-split, loss-weights]
 requires:
   - 02-01 (test infra: pytest, conftest fixtures, skeleton test files)
 provides:
   - per-(Azgaar source × style) canonical map directories (A4 option a)
   - image.png + sample_weights.json in the synthetic per-map schema
-  - locked-shape synthetic sample_weights.json writer (values PROVISIONAL)
+  - locked-shape synthetic sample_weights.json writer (uniform-1.0, approved)
   - ROADMAP SC#3 topography-boundary verification gate
+  - seeded stratified frozen train/test split (EVAL-01, D-15..D-18)
 affects:
   - scripts/label.py
   - scripts/render.py
@@ -18,27 +19,33 @@ affects:
   - scripts/synthetic_weights.py
   - scripts/biome_mapping.py
   - tests/test_render.py
+  - tests/test_synthetic_weights.py
+  - tests/test_split.py
 tech-stack:
   added: []
   patterns:
     - per-(source×style) dir with byte-identical shared label masks
     - locked-shape sample_weights.json writer mirroring historical/label.py
+    - seeded stratified-by-template hold-out with a frozen ID-list manifest
 key-files:
   created:
     - scripts/synthetic_weights.py
+    - tests/test_synthetic_weights.py
   modified:
     - scripts/label.py
     - scripts/render.py
     - scripts/build_dataset.py
     - scripts/biome_mapping.py
     - tests/test_render.py
+    - tests/test_split.py
 decisions:
   - "Azgaar GeoJSON exposes NO heightmap template name -> stratification falls back to a filename-derived key (documented; user-aware)"
-  - "Synthetic weight VALUES deferred to the blocking checkpoint:decision (NOT self-approved)"
+  - "Synthetic loss weights = uniform 1.0 (user-approved checkpoint:decision 2026-05-15, option 'uniform') — synthetic labels are exact by construction; class imbalance deferred to Phase 3/4 DataLoader/sampler"
+  - "v1 synthetic source target N=100 Azgaar source maps (user-locked A7; research recommended N=50) — splitter is N-agnostic"
 metrics:
-  tasks_completed: 2
+  tasks_completed: 4
   tasks_total: 4
-  checkpoint: blocking checkpoint:decision reached (loss-weight approval)
+  checkpoint: blocking checkpoint:decision RESOLVED (loss-weight approval = uniform 1.0)
   completed_date: 2026-05-15
 ---
 
@@ -46,17 +53,17 @@ metrics:
 
 **One-liner:** Restructured the synthetic pipeline to one canonical
 `<azgaar_id>__<style>/` directory per (Azgaar source × render style) with
-byte-identical shared label masks and the full locked per-map schema, and
-installed the ROADMAP SC#3 topography-boundary verification gate — paused at the
-blocking loss-weight `checkpoint:decision` before the weights-finalisation and
-frozen-split tasks.
+byte-identical shared label masks, installed the ROADMAP SC#3
+topography-boundary verification gate, finalised the synthetic loss weights to
+the user-approved uniform-1.0, and implemented the seeded stratified-by-template
+train/test split with a frozen `split.json` (EVAL-01, D-15..D-18) at the
+user-locked N=100 v1 target.
 
 ## Status
 
-**PAUSED at the blocking `checkpoint:decision` (Task 3 of 4 in plan order).**
-Tasks 1 and 2 are complete and committed. Tasks "Create synthetic_weights.py
-with approved values" and "Seeded stratified split with frozen split.json"
-remain and require the checkpoint decision first.
+**COMPLETE — all 4 tasks executed.** The blocking loss-weight
+`checkpoint:decision` was resolved (approved: **uniform 1.0**) and Tasks 3 & 4
+were executed in this continuation run.
 
 ## What Was Built
 
@@ -86,6 +93,63 @@ remain and require the checkpoint decision first.
   domain) plus water (`h < H_SEA_LEVEL`) → `None`. It is the SC#3 verification
   gate (not an image-dimension proxy).
 
+### Checkpoint — loss-weight decision RESOLVED
+
+The blocking `checkpoint:decision` (synthetic per-source loss-weight values)
+was presented to and resolved by the user on **2026-05-15**.
+**Approved option: `uniform`** — all 9 land-cover classes = `1.0`,
+`topography_weight = 1.0`. Rationale: synthetic labels are exact by
+construction (rasterised directly from the Azgaar source), so no temporal-drift
+discount applies; class-imbalance correction is deferred to the Phase 3/4
+DataLoader/sampler, not folded into the per-source weight layer.
+
+### Task 3 — finalised synthetic loss weights (commit `d595d60`)
+
+- `scripts/synthetic_weights.py`: stripped all PROVISIONAL / checkpoint-pending
+  markers and comments; `SYNTHETIC_LC_WEIGHTS` finalised to the approved
+  uniform `1.0` for all 9 canonical classes; `SYNTHETIC_TOPO_WEIGHT = 1.0`.
+  Dict shape is locked set-equal to `HISTORICAL_LC_WEIGHTS`. The
+  `write_sample_weights()` writer is unchanged (locked-shape JSON:
+  `land_cover_weights` / `topography_weight` / `source` / `map_file`,
+  `source == "synthetic"`).
+- `tests/test_synthetic_weights.py` (new): asserts the 9-key set equals
+  `HISTORICAL_LC_WEIGHTS` keys, every value is a float, the approved
+  uniform-1.0 values, and the written JSON round-trips with the locked
+  top-level keys + `source == "synthetic"`.
+- `scripts/historical/label.py` left unmodified (verified via empty `git diff`).
+
+### Task 4 — seeded stratified frozen split, N=100 v1 (commit `9d40f38`)
+
+- `scripts/build_dataset.py`: upgraded to the `build_historical_dataset.py`
+  argparse sub-command scaffold (`add_subparsers(dest="command",
+  required=True)` + `add_common`), `build` sub-command.
+- `template_key()`: derives the stratification (continent-template) key from
+  the source filename — strips the trailing numeric/index suffix
+  (`europe_07` → `europe`); a no-prefix source becomes its own singleton
+  stratum (never starved). This is the documented fallback because Azgaar
+  GeoJSON exports expose no heightmap-template field.
+- `stratified_split()`: deterministic; seeded with the fixed constant
+  `_SPLIT_SEED = 42` (salted per-template for stability as sources are
+  appended); `~15%` per-template hold-out (`round(n * 0.15)`, ≥1 for a
+  non-empty template); operates at the WHOLE Azgaar source-map level so ALL
+  render styles of a held-out source go to `test/` (D-15, D-16).
+- `load_or_create_split()`: on the FIRST build computes the split and writes
+  `data/synthetic/split.json` listing the held-out test IDs; on EVERY
+  subsequent build reads it and never recomputes/mutates it (D-17, D-18).
+- `build()`: routes each source into sibling `train/<id>__<style>/` vs
+  `test/<id>__<style>/` by the frozen test-ID list; new sources after the
+  first build always land in `train/`.
+- N=100 / ~15–16-per-template v1 target documented in the `build`
+  sub-command help line and the module epilog (user-locked A7; research
+  recommended N=50).
+- `tests/test_split.py` (filled): `test_seeded_split_deterministic`,
+  `test_stratified_holdout_proportional`,
+  `test_split_is_whole_source_no_template_collision`,
+  `test_no_train_test_intersection` (EVAL-01, also asserts all styles of a
+  held-out source under `test/` and none under `train/` — D-15),
+  `test_split_manifest_frozen` (EVAL-01 / D-18: rebuild with new sources →
+  `split.json` byte-unchanged, new IDs land in `train/`).
+
 ## Deviations from Plan
 
 ### Auto-fixed Issues
@@ -107,6 +171,9 @@ remain and require the checkpoint decision first.
   (added an explicit `h_to_topo(64) == hilly` regression guard)
 - **Commit:** `c2347f7`
 
+No other deviations — Tasks 3 & 4 executed exactly as written against the
+resolved checkpoint decision.
+
 ## Template-Name Finding (recorded per Task 1)
 
 **Azgaar GeoJSON exposes NO heightmap template name.** There are no raw Azgaar
@@ -114,42 +181,28 @@ exports on disk (`data/synthetic/raw/` does not exist), and the Plan-01
 `sample_azgaar_geojson` conftest fixture carries only `properties.biome` and
 `properties.height` — no per-feature template property and no top-level
 `metadata`/`info` block. Per the plan's documented fallback, the seeded
-stratified split (remaining Task 4) will derive its stratification key from the
-source filename (and may accept an explicit `--template`-style arg). **User
-awareness flagged:** if real Azgaar exports are later found to expose a template
-field, the split key should be revisited before the split.json is frozen.
+stratified split derives its stratification key from the source filename
+(`template_key()` strips the trailing numeric suffix). **User awareness
+flagged:** if real Azgaar exports are later found to expose a template field,
+`template_key()` should be revisited **before** the first `split.json` is
+frozen (it is frozen on first real build).
 
-## Provisional Artifact Pending Checkpoint
+## Loss-Weight Decision (resolved)
 
-`scripts/synthetic_weights.py` was created in Task 1 because the refactored
-`label.make_labels` imports its locked-shape `write_sample_weights()` writer.
-The dict **shape** and `topography_weight` are locked; the per-class **float
-values** are a clearly-marked PROVISIONAL DEFAULT (uniform 1.0) and are
-**explicitly NOT the approved values** — they will be finalised to the
-user-approved checkpoint option in the remaining Task 3. No checkpoint
-self-approval was performed.
-
-## Remaining Work (after checkpoint decision)
-
-- **Task 3:** finalise `scripts/synthetic_weights.py` to the approved per-class
-  floats; add `tests/test_synthetic_weights.py` (9 canonical keys set-equal to
-  `HISTORICAL_LC_WEIGHTS`, all floats, JSON round-trips with
-  `"source": "synthetic"`). Do NOT modify `historical/label.py`.
-- **Task 4:** upgrade `build_dataset.py` to the
-  `build_historical_dataset.py` argparse sub-command scaffold; add the seeded
-  (`_SPLIT_SEED = 42`) stratified-by-template ~15% hold-out writing/reading a
-  frozen `data/synthetic/split.json` (D-15..D-18); document the user-locked
-  N=100 / ~15–16-per-template v1 target in the sub-command help; fill
-  `tests/test_split.py` (deterministic / no-intersection / frozen-manifest /
-  stratified-proportional).
+The synthetic loss-weight `checkpoint:decision` is resolved: **uniform 1.0**
+for all 9 land-cover classes and `topography_weight`. `synthetic_weights.py`
+has been finalised and all PROVISIONAL markers removed. Class-imbalance
+correction is intentionally deferred to the Phase 3/4 DataLoader/sampler, not
+the per-source weight layer.
 
 ## Self-Check
 
-- `scripts/synthetic_weights.py` — present
-- `scripts/label.py`, `scripts/render.py`, `scripts/build_dataset.py`,
-  `scripts/biome_mapping.py` — modified, committed
-- `tests/test_render.py` — 4 tests passing (incl. the SC#3 gate)
-- Commits `9ec52e2`, `c2347f7` — present on the worktree branch
-- Quick suite: 8 passed, 13 skipped, 0 failed
+- `scripts/synthetic_weights.py` — present, finalised (no PROVISIONAL markers)
+- `scripts/build_dataset.py` — argparse sub-command scaffold + frozen split
+- `tests/test_synthetic_weights.py` — present, 4 tests passing
+- `tests/test_split.py` — present, 5 tests passing (EVAL-01 guardrails)
+- `scripts/historical/label.py` — unmodified (empty git diff)
+- Commits `9ec52e2`, `c2347f7`, `d595d60`, `9d40f38` — present on the worktree branch
+- Quick suite: 26 passed, 4 skipped, 0 failed (`pytest tests/ -x --ignore=tests/integration`)
 
 ## Self-Check: PASSED
