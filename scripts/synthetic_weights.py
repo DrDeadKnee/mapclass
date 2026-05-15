@@ -9,23 +9,22 @@ historical writer (``scripts/historical/label.py``):
      "source": "synthetic",
      "map_file": "<name>"}
 
-The per-class float VALUES are subject to a blocking ``checkpoint:decision``
-in plan 02-03 (planner proposes, user approves). The values below are a
-PROVISIONAL DEFAULT (uniform 1.0) — synthetic labels are ground-truth by
-construction, so no temporal-drift discount applies. They are finalised to
-the user-approved option in plan 02-03 Task 3 after the checkpoint.
+Synthetic labels are exact ground truth by construction — they are rasterised
+directly from the Azgaar source, so no temporal-drift discount applies (unlike
+the historical stream, where ``HISTORICAL_LC_WEIGHTS`` down-weights classes
+subject to centuries of land-use change). Every per-class weight is therefore
+``1.0``. Class-imbalance correction is deferred to the Phase 3/4
+DataLoader/sampler, not folded into this per-source weight layer.
 
 Keys are the exact 9 canonical LANDCOVER_CLASSES names from
-``scripts/biome_mapping.py`` (set-equal to HISTORICAL_LC_WEIGHTS keys).
+``scripts/biome_mapping.py`` (set-equal to ``HISTORICAL_LC_WEIGHTS`` keys).
 """
 
 import json
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# PROVISIONAL — pending plan 02-03 checkpoint:decision approval.
-# Locked shape; per-class float values awaiting user sign-off.
-# ---------------------------------------------------------------------------
+# Uniform 1.0 — synthetic labels are exact by construction (user-approved
+# 2026-05-15; plan 02-03 checkpoint:decision option "uniform").
 SYNTHETIC_LC_WEIGHTS: dict[str, float] = {
     "water":           1.0,
     "trees":           1.0,
