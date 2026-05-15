@@ -23,6 +23,7 @@ summary is a MANDATORY cache: if the sidecar exists it is loaded, never
 rescanned.
 """
 
+import calendar
 import json
 import math
 import os
@@ -81,8 +82,12 @@ def season_for_latitude(lat: float, ref_year: int = 2023) -> str:
     if lat > 23.5:
         return f"{ref_year}-05-01/{ref_year}-09-30"
     if lat < -23.5:
-        # one contiguous austral summer (Dec–Feb), no double-season
-        return f"{ref_year - 1}-12-01/{ref_year}-02-28"
+        # one contiguous austral summer (Dec–Feb), no double-season.
+        # Use the actual last day of February so a leap ref_year does NOT
+        # silently drop Feb 29 — one day of the lowest-cloud season — from
+        # the southern-temperate window (WR-02).
+        feb_end = calendar.monthrange(ref_year, 2)[1]
+        return f"{ref_year - 1}-12-01/{ref_year}-02-{feb_end:02d}"
     # tropics: exactly the trailing 12 months of ref_year
     return f"{ref_year}-01-01/{ref_year}-12-31"
 

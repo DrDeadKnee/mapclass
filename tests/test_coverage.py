@@ -76,6 +76,19 @@ def test_season_varies_by_hemisphere():
     assert tropic != north and tropic != south
 
 
+def test_southern_window_is_leap_year_correct():
+    """WR-02: a leap ref_year must keep Feb 29 in the austral-summer window.
+
+    2024 is a leap year — the southern-temperate range must end 2024-02-29,
+    not the hard-coded 2024-02-28 (which silently dropped a day of the
+    lowest-cloud season). A non-leap year still ends 02-28.
+    """
+    leap = coverage.season_for_latitude(-35.0, ref_year=2024)
+    nonleap = coverage.season_for_latitude(-35.0, ref_year=2023)
+    assert leap == "2023-12-01/2024-02-29"
+    assert nonleap == "2022-12-01/2023-02-28"
+
+
 def test_build_summary_reloads_cache_without_rescanning(tmp_path, mocker):
     """If the sidecar exists, build_summary loads it and never opens a tile."""
     cache = tmp_path / "coverage_summary.json"
