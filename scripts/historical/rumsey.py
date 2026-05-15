@@ -2,14 +2,24 @@
 Search the David Rumsey Map Collection for 16th–17th century regional maps
 and download georeferenced map images as GeoTIFFs.
 
-Uses two endpoints:
-  - LUNA search API: https://www.davidrumsey.com/luna/servlet/as/search
-    Returns JSON with map metadata.
-  - WMS GetMap (Georeferencer): https://maps.georeferencer.com/georeferences/...
-    For maps already registered in the Georeferencer service.
+Two data sources are stitched together:
 
-Maps that are not yet georeferenced are written to an unregistered_manifest.json
-for manual GCP placement in QGIS.
+  - LUNA search API: https://www.davidrumsey.com/luna/servlet/as/search
+    Returns JSON with map metadata, IIIF manifest URLs, and JPEG image URLs.
+    LUNA itself does *not* expose bounding boxes, WMS URLs, or any indication
+    of which maps are georeferenced.
+
+  - Allmaps annotation index: https://annotations.allmaps.org
+    Public W3C Web-Annotation index of community-contributed georeferencing
+    for IIIF maps, keyed by IIIF manifest URL. Provides ground control points
+    (pixel ↔ WGS84) for the Rumsey subset that has been crowdsourced.
+
+For each ranked LUNA result we ask Allmaps for georeferencing. If GCPs exist
+and the resulting WGS84 bbox falls within the scale range, the IIIF image is
+downloaded, the GCPs are scaled to that size, and a GeoTIFF is written using
+an affine transform fit. Maps absent from Allmaps are emitted to an
+unregistered manifest for downstream semi-automatic (PaliGemma) or manual
+(MapWarper / QGIS) georeferencing.
 
 Search strategy:
   The LUNA API does not support date-range queries (Lucene syntax returns zero
@@ -18,23 +28,25 @@ Search strategy:
   max_results items. This ensures even temporal and geographic distribution
   and biases toward well-documented maps.
 
-Metadata available per item (always present unless noted):
+Metadata available per LUNA item (always present unless noted):
   Top-level: id, urlSize0–urlSize4 (JPEG image URLs), iiifManifest
   fieldValues: Author, Date, Short Title, Full Title, Type, Obj Height cm,
     Obj Width cm, Publisher, Publisher Location, Pub Title, Pub Type
   Sparse (30–50% of items): Scale 1, Country, City, World Area, Region,
     Reference, Engraver or Printer
 
-Not available: bounding boxes / coordinates, orientation/bearing.
+Not available from LUNA: bounding boxes, WMS URLs, georeferencer.com links.
 """
 
+import io
 import json
 import math
-import re
 import time
 from pathlib import Path
 
 import requests
+
+from historical import allmaps
 
 # David Rumsey LUNA API
 _LUNA_SEARCH = "https://www.davidrumsey.com/luna/servlet/as/search"
