@@ -7,34 +7,69 @@ own canonical per-map directory ``<azgaar_id>__<style>/`` containing exactly one
 (identical across styles for the same source — generated once and shared) plus
 ``sample_weights.json``.
 
-Usage:
-    python build_dataset.py <raw_dir> <output_dir> [--styles flat illustrated satellite]
+v1 synthetic source target: **N=100 Azgaar source maps** (user-confirmed A7
+2026-05-15; research recommended N=50, user locked N=100) — roughly ~15–16 maps
+per template across ~12 continent templates, which makes a stratified 15%
+hold-out statistically robust for EVAL-01. The split logic is N-agnostic: the
+build does not hard-fail on fewer/more sources.
 
-For each <name>.geojson in raw_dir and each style S, produces:
-    <output_dir>/<name>__<S>/image.png
-    <output_dir>/<name>__<S>/land_cover.png   (shared across styles of <name>)
-    <output_dir>/<name>__<S>/topography.png   (shared across styles of <name>)
-    <output_dir>/<name>__<S>/sample_weights.json
+Sub-commands
+------------
+  build  — render + label every source into a seeded, stratified, frozen
+           train/test split under ``<out-dir>/{train,test}/<id>__<style>/``.
 
-Raw GeoJSON files are expected to come from Azgaar's GIS export
-(Map menu → Save → GeoJSON with all layers, or Tools → Export → GeoJSON cells).
+Train/test split (D-15..D-18)
+-----------------------------
+  * Stratified by Azgaar continent *template* (D-16). Azgaar GeoJSON exports do
+    NOT expose a heightmap-template field (confirmed against the Plan-01 conftest
+    fixture; no raw exports on disk), so the template key falls back to a
+    filename-derived prefix — see ``template_key``. **User awareness:** if real
+    Azgaar exports later expose a template field, revisit this key BEFORE the
+    first ``split.json`` is frozen.
+  * Seeded with a fixed constant (``_SPLIT_SEED = 42``) for reproducibility (D-16).
+  * ~15% of source maps held out, each template contributing proportionally (D-16).
+  * Split is at the WHOLE Azgaar source-map level — ALL render styles of a
+    held-out source go to ``test/`` (D-15). Zero cross-style leakage by
+    construction.
+  * FIRST build computes the split and WRITES ``<out-dir>/split.json`` listing
+    the held-out test source-map IDs (D-18). EVERY subsequent build READS
+    ``split.json`` and never recomputes/mutates it: IDs in the list → ``test/``,
+    everything else (including newly generated sources) → ``train/`` (D-17, D-18).
+    The Phase 4 test set never changes after the first recording.
 
-Template-name note (A4 / split stratification): Azgaar GeoJSON exports do NOT
-expose the heightmap template name in feature ``properties`` or a top-level
-metadata block (confirmed against the Plan-01 conftest fixture; no raw exports
-on disk to inspect). The seeded stratified split (Task 4) therefore falls back
-to a filename-derived stratification key — see ``build_dataset`` split logic.
+Usage
+-----
+  python build_dataset.py build [--raw-dir RAW] [--out-dir OUT] [--styles ...]
+
+Defaults:
+  --raw-dir   data/synthetic/raw
+  --out-dir   data/synthetic
+  --styles    flat illustrated satellite
 """
 
+import argparse
+import json
+import math
+import random
 import re
 import sys
 from pathlib import Path
+
+_HERE = Path(__file__).parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 from label import make_label_arrays
 from render import render_one
 from synthetic_weights import write_sample_weights
 
 _STYLE_SEP = "__"
+_SPLIT_SEED = 42          # D-16 — fixed for reproducibility; never change.
+_TEST_FRACTION = 0.15     # D-16 — ~15% stratified hold-out.
+_SPLIT_FILENAME = "split.json"
+
+# v1 synthetic source target — user-confirmed A7 (2026-05-15).
+N_TARGET_V1 = 100         # ~15–16 maps per template across ~12 templates.
 
 
 def _sanitize_stem(stem: str) -> str:
@@ -42,16 +77,84 @@ def _sanitize_stem(stem: str) -> str:
     return re.sub(r"[^\w-]", "_", stem)
 
 
+def template_key(src_id: str) -> str:
+    """Derive the stratification (continent-template) key from a source ID.
+
+    Azgaar GeoJSON exports do not carry a heightmap-template name, so the key
+    is the source stem with its trailing numeric/index suffix stripped:
+    ``europe_07`` / ``europe-7`` / ``europe7`` → ``europe``. A source with no
+    template-like prefix falls back to the whole sanitized stem (its own
+    stratum), which keeps the splitter correct (never starves a singleton).
+    """
+    s = _sanitize_stem(src_id)
+    m = re.match(r"^(.*?)[ _\-]*\d+$", s)
+    key = m.group(1) if m and m.group(1) else s
+    return key.strip("_-").lower() or s.lower()
+
+
+def stratified_split(source_ids, seed: int = _SPLIT_SEED,
+                      test_fraction: float = _TEST_FRACTION):
+    """Return the sorted list of held-out (test) source IDs.
+
+    Deterministic: stratifies by ``template_key`` and, within each template,
+    seeds an independent RNG (``seed`` salted by the template name) so the
+    hold-out is reproducible across re-invocations and stable as new sources
+    are appended. Each template contributes ``round(n * test_fraction)`` (at
+    least 1 when the template has >=1 source and the global fraction > 0).
+    """
+    by_template: dict[str, list[str]] = {}
+    for sid in source_ids:
+        by_template.setdefault(template_key(sid), []).append(sid)
+
+    test_ids: list[str] = []
+    for tmpl in sorted(by_template):
+        members = sorted(by_template[tmpl])
+        n = len(members)
+        k = int(round(n * test_fraction))
+        if k == 0 and n > 0 and test_fraction > 0:
+            k = 1
+        k = min(k, n)
+        rng = random.Random(f"{seed}:{tmpl}")
+        test_ids.extend(rng.sample(members, k))
+    return sorted(test_ids)
+
+
+def load_or_create_split(out_dir: Path, source_ids) -> set[str]:
+    """Read a frozen ``split.json`` if present, else compute + write it once.
+
+    D-18: the manifest is snapshotted at the FIRST build and is frozen by ID
+    list thereafter — this function never recomputes or mutates an existing
+    ``split.json``. Returns the set of test (held-out) source IDs.
+    """
+    split_path = Path(out_dir) / _SPLIT_FILENAME
+    if split_path.exists():
+        data = json.loads(split_path.read_text())
+        return set(data["test"])
+
+    test_ids = stratified_split(source_ids)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    split_path.write_text(json.dumps(
+        {
+            "seed": _SPLIT_SEED,
+            "test_fraction": _TEST_FRACTION,
+            "test": test_ids,
+        },
+        indent=2,
+    ))
+    return set(test_ids)
+
+
 def build_one_source(
     geojson_path: Path,
-    output_root: Path,
+    split_root: Path,
     styles=("flat", "illustrated", "satellite"),
 ) -> list[Path]:
     """Build every per-(source×style) dir for a single Azgaar source.
 
-    ``land_cover.png`` / ``topography.png`` are rasterised once and saved
-    byte-identically into each style dir (shared label, D-15 / A4 option (a)).
-    Returns the list of created style directories.
+    ``split_root`` is the train/ or test/ root the caller already routed this
+    source into (D-17). ``land_cover.png`` / ``topography.png`` are rasterised
+    once and saved byte-identically into each style dir (shared label, D-15 /
+    A4 option (a)). Returns the list of created style directories.
     """
     geojson_path = Path(geojson_path)
     src_id = _sanitize_stem(geojson_path.stem)
@@ -61,7 +164,7 @@ def build_one_source(
 
     created: list[Path] = []
     for style in styles:
-        out = Path(output_root) / f"{src_id}{_STYLE_SEP}{style}"
+        out = Path(split_root) / f"{src_id}{_STYLE_SEP}{style}"
         out.mkdir(parents=True, exist_ok=True)
 
         img = render_one(geojson_path, style)
@@ -71,11 +174,12 @@ def build_one_source(
         write_sample_weights(out, geojson_path.stem)
 
         created.append(out)
-        print(f"  built {out.name}  ({lc_img.width}x{lc_img.height}px)")
+        print(f"  built {out.parent.name}/{out.name}  ({lc_img.width}x{lc_img.height}px)")
     return created
 
 
-def build(raw_dir: str | Path, output_dir: str | Path, styles=("flat", "illustrated", "satellite")) -> None:
+def build(raw_dir: str | Path, output_dir: str | Path,
+          styles=("flat", "illustrated", "satellite")) -> None:
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)
 
@@ -84,23 +188,64 @@ def build(raw_dir: str | Path, output_dir: str | Path, styles=("flat", "illustra
         print(f"No .geojson files found in {raw_dir}")
         sys.exit(1)
 
-    print(f"Found {len(geojsons)} source map(s) in {raw_dir}")
+    n = len(geojsons)
+    print(f"Found {n} source map(s) in {raw_dir} "
+          f"(v1 target N={N_TARGET_V1}, ~15-16/template across ~12 templates)")
+    if n < N_TARGET_V1:
+        print(f"  note: {n} < N={N_TARGET_V1} v1 target — splitter is N-agnostic, "
+              f"not hard-failing.")
+
+    source_ids = [_sanitize_stem(g.stem) for g in geojsons]
+    test_ids = load_or_create_split(output_dir, source_ids)
+    print(f"  split.json: {len(test_ids)} held-out test source(s) (frozen)")
+
+    train_root = output_dir / "train"
+    test_root = output_dir / "test"
 
     for geojson_path in geojsons:
-        print(f"\n--- {geojson_path.stem} ---")
+        sid = _sanitize_stem(geojson_path.stem)
+        dest = test_root if sid in test_ids else train_root
+        print(f"\n--- {geojson_path.stem} -> {dest.name}/ ---")
         try:
-            build_one_source(geojson_path, output_dir, styles=styles)
+            build_one_source(geojson_path, dest, styles=styles)
         except Exception as exc:  # per-source resilience (T-02-09)
             print(f"  FAILED {geojson_path.name}: {exc}")
 
-    print(f"\nDone. Dataset written to {output_dir}")
+    print(f"\nDone. Dataset written to {output_dir} (train/ + test/)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Assemble the synthetic (Azgaar + Pillow) training dataset",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_common(p):
+        p.add_argument("--raw-dir", type=Path,
+                       default=Path("data/synthetic/raw"),
+                       help="Directory of Azgaar .geojson exports")
+        p.add_argument("--out-dir", type=Path,
+                       default=Path("data/synthetic"),
+                       help="Dataset root (train/ + test/ + frozen split.json)")
+        p.add_argument("--styles", nargs="+",
+                       default=["flat", "illustrated", "satellite"],
+                       help="Render styles; each becomes its own <id>__<style>/ dir")
+
+    p_build = sub.add_parser(
+        "build",
+        help=(f"Render+label every source into a seeded stratified frozen "
+              f"train/test split (v1 target N={N_TARGET_V1} Azgaar source "
+              f"maps, ~15-16 per template across ~12 continent templates; "
+              f"~15%% stratified hold-out, frozen split.json — D-15..D-18)"),
+    )
+    add_common(p_build)
+
+    args = parser.parse_args()
+    if args.command == "build":
+        build(args.raw_dir, args.out_dir, tuple(args.styles))
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    if len(args) < 2:
-        print("Usage: python build_dataset.py <raw_dir> <output_dir> [style ...]")
-        sys.exit(1)
-    raw_dir, output_dir = args[0], args[1]
-    styles = args[2:] if len(args) > 2 else ("flat", "illustrated", "satellite")
-    build(raw_dir, output_dir, styles)
+    main()
