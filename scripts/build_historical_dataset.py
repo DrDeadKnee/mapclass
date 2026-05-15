@@ -49,21 +49,39 @@ def cmd_search(raw_dir: Path, max_maps: int) -> None:
     print("=== David Rumsey search ===")
     items = rumsey.search_maps(max_results=max_maps)
 
-    downloaded = 0
-    unregistered = []
+    # D-05: per-reason drop accounting. "A clean pipeline that quietly throws
+    # away most of the data is not job done" — every reason is surfaced loudly.
+    drops = {
+        "ok": 0,
+        "out_of_scale": 0,
+        "not_in_allmaps": 0,
+        "gcps_insufficient": 0,
+        "download_failed": 0,
+    }
+    unregistered: list[tuple[dict, str]] = []
     for item in items:
-        path = rumsey.download_georeferenced(item, geo_dir)
-        if path is not None:
-            downloaded += 1
-        else:
-            wms = rumsey._wms_url(item)
-            if wms is None:
-                unregistered.append(item)
+        _, status = rumsey.download_georeferenced(item, geo_dir)
+        drops[status] = drops.get(status, 0) + 1
+        # out_of_scale maps are dropped SILENTLY (D-04 — not in the manifest);
+        # ok maps are already georeferenced. Only the two registration-needed
+        # reasons go to the v2 hand-off manifest.
+        if status in ("not_in_allmaps", "gcps_insufficient"):
+            unregistered.append((item, status))
 
     rumsey.emit_manifest(unregistered, manifest_path)
+
+    total = len(items)
     print(f"\nSearch summary:")
-    print(f"  Downloaded (georeferenced): {downloaded}")
-    print(f"  Needs manual GCPs:         {len(unregistered)}  → {manifest_path}")
+    for reason, n in drops.items():
+        print(f"  {reason}: {n}")
+    print(f"  manifest (needs GCPs): {len(unregistered)}  → {manifest_path}")
+
+    if total > 0 and drops["out_of_scale"] / total > 0.5:
+        print(
+            f"\n⚠ out_of_scale rate >50% "
+            f"({drops['out_of_scale']}/{total}) — the scale window may be "
+            f"hiding most of the dataset; Phase 2 is not done (D-05)."
+        )
 
 
 # ---------------------------------------------------------------------------
