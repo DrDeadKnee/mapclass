@@ -45,9 +45,14 @@ _HERE = Path(__file__).parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import tiling
 from historical import label as hist_label
 from satellite import coverage, fetch, stac
 from satellite import weights as sat_weights
+
+_REQUIRED_MAP_FILES = (
+    "image.png", "land_cover.png", "topography.png", "sample_weights.json",
+)
 
 _DEFAULT_SUMMARY = Path("data/satellite/coverage_summary.json")
 _DEFAULT_MANIFEST = Path("data/satellite/resolved_scenes.json")
@@ -198,6 +203,15 @@ def _process_one(scene: dict, out_dir: Path) -> tuple[str, str]:
         hist_label.make_labels(written, sample_dir)
         # Satellite supplies its OWN weights dict (same locked JSON shape).
         sat_weights.write_sample_weights(sample_dir, geotiff.name)
+        # Tile into nested pyramids now the full per-map schema is written.
+        # Guard: skip + log a partial map rather than tiling a corrupt dir.
+        missing = [
+            f for f in _REQUIRED_MAP_FILES if not (sample_dir / f).exists()
+        ]
+        if missing:
+            print(f"  SKIP tiling {safe}: missing {', '.join(missing)}")
+        else:
+            tiling.tile(sample_dir)
         return rid, "ok"
     except Exception as exc:  # noqa: BLE001 — surface, don't crash the batch
         print(f"  ERROR {rid}: {exc}")

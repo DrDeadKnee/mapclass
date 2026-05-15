@@ -34,8 +34,13 @@ _HERE = Path(__file__).parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import tiling
 from historical import label as hist_label
 from historical import rumsey
+
+_REQUIRED_MAP_FILES = (
+    "image.png", "land_cover.png", "topography.png", "sample_weights.json",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +97,17 @@ def _process_one(tif: Path, out_dir: Path) -> tuple[Path, Exception | None]:
     sample_dir = out_dir / tif.stem
     try:
         hist_label.make_labels(tif, sample_dir)
+        # Decompose into the shared nested pyramids once the full per-map
+        # schema exists. Guard: a partially-failed map (missing any of the 4
+        # required files) is skipped + logged, never tiled (T-02-16).
+        missing = [
+            f for f in _REQUIRED_MAP_FILES if not (sample_dir / f).exists()
+        ]
+        if missing:
+            print(f"  SKIP tiling {sample_dir.name}: missing "
+                  f"{', '.join(missing)}")
+        else:
+            tiling.tile(sample_dir)
         return tif, None
     except Exception as exc:
         return tif, exc
