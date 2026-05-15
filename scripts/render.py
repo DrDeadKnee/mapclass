@@ -135,6 +135,26 @@ def render_style(features, min_x, min_y, width, height, style: str) -> Image.Ima
     return img
 
 
+def render_one(geojson_path: str | Path, style: str) -> Image.Image:
+    """Render a single style and return the PIL image (no disk write).
+
+    Used by the per-(source×style) build so the rendered image can be handed
+    to ``label.make_labels`` as ``image.png`` alongside the shared label masks.
+    """
+    geojson_path = Path(geojson_path)
+    with open(geojson_path) as f:
+        data = json.load(f)
+    features = data["features"]
+
+    min_x, min_y, max_x, max_y = _bbox(features)
+    width = int(max_x - min_x) + 1
+    height = int(max_y - min_y) + 1
+
+    if style not in PALETTES:
+        raise ValueError(f"Unknown style '{style}'")
+    return render_style(features, min_x, min_y, width, height, style)
+
+
 def render_map(geojson_path: str | Path, output_dir: str | Path, styles=("flat", "illustrated", "satellite")) -> None:
     geojson_path = Path(geojson_path)
     output_dir = Path(output_dir)

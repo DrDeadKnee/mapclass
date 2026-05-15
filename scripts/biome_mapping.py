@@ -95,10 +95,22 @@ def h_to_landcover(h: int, biome: int) -> int:
 
 
 def h_to_topo(h: int) -> int | None:
-    """Map raw Azgaar h → topography class index. Returns None for water cells."""
+    """Map raw Azgaar h → topography class index. Returns None for water cells.
+
+    ROADMAP SC#3 LOCKED boundaries over the normalized [0,100] domain:
+    flat ≤20, hilly 20–55 (55 inclusive), mountainous >55.
+
+    ``normalize_land_h`` is integer-derived, so its theoretical value is exact
+    at every reachable point; the float division can introduce ~1e-14 error
+    (e.g. h=64 → 55.00000000000001) that would otherwise mis-bin a cell
+    sitting exactly on the hilly/mountainous cut into mountainous. Round to a
+    precision far finer than any reachable spacing (the smallest step is
+    100/80 = 1.25 per unit of h) before the locked comparison so the inclusive
+    upper bounds hold exactly.
+    """
     if h < H_SEA_LEVEL:
         return None
-    norm = normalize_land_h(h)
+    norm = round(normalize_land_h(h), 6)
     if norm <= 20:
         return TOPO_IDX["flat"]
     elif norm <= 55:
