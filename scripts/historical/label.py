@@ -27,7 +27,6 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from PIL import Image
-from pyproj import Transformer
 from rasterio.crs import CRS
 
 from historical.dem import fetch_topo
@@ -59,18 +58,29 @@ def _to_wgs84_bbox(ds: rasterio.DatasetReader) -> tuple[float, float, float, flo
         b = ds.bounds
         return b.left, b.bottom, b.right, b.top
 
-    transformer = Transformer.from_crs(ds.crs, _WGS84, always_xy=True)
+    # WR-09: a 4-corner envelope under-covers for UTM/conic projections
+    # over large extents — the reprojected edges bow outward, so the true
+    # min/max lon/lat lie on an EDGE, not a corner. Densify the boundary
+    # (sample many points per edge) so the WorldCover/DEM tile enumeration
+    # does not miss border tiles (NODATA stripes).
+    from rasterio.warp import transform_bounds
+
     b = ds.bounds
-    # Transform all four corners and take the enclosing envelope
-    corners = [
-        transformer.transform(b.left,  b.bottom),
-        transformer.transform(b.right, b.bottom),
-        transformer.transform(b.left,  b.top),
-        transformer.transform(b.right, b.top),
-    ]
-    lons = [c[0] for c in corners]
-    lats = [c[1] for c in corners]
-    return min(lons), min(lats), max(lons), max(lats)
+    west, south, east, north = transform_bounds(
+        ds.crs, _WGS84,
+        b.left, b.bottom, b.right, b.top,
+        densify_pts=21,
+    )
+    if west > east:
+        # Antimeridian-crossing extent yields an inside-out bbox. Downstream
+        # tile enumeration cannot handle a split query here; warn loudly so
+        # the resulting NODATA is not mistaken for clean data.
+        print(
+            f"  Warning: WGS84 bbox crosses the antimeridian "
+            f"(west={west:.4f} > east={east:.4f}) — tile coverage for this "
+            f"source may be incomplete (WR-09)."
+        )
+    return west, south, east, north
 
 
 def _read_rgb(ds: rasterio.DatasetReader) -> np.ndarray:
