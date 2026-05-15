@@ -28,11 +28,11 @@ joint per-pixel NLL on held-out synthetic maps.
 ## Current Position
 
 Phase: 2 of 4 (Build a dataset of pixel-label pairs)
-Plan: TBD (Phase 2 plans not yet decomposed)
+Plan: 5 plans across 4 waves (02-01 … 02-05), verified PASSED — none executed yet
 Status: Ready to execute
-Last activity: 2026-05-15 -- Phase 02 planning complete
-working branch `phase1.5`; Allmaps annotation index integration in progress
-(`scripts/historical/allmaps.py` untracked, `scripts/historical/rumsey.py` modified).
+Last activity: 2026-05-15 -- Phase 02 planning complete (5 plans, 4 waves)
+working branch `phase1.5`; working tree clean — all Phase 2 planning artifacts
+committed (HEAD `9ddd6ab`). Allmaps integration already tracked as of `1e43917`.
 
 Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
 
@@ -97,9 +97,15 @@ Items acknowledged and carried forward:
 
 ## Session Continuity
 
-Last session: 2026-05-15 — session resumed, awaiting next-action selection (plan Phase 2)
-Stopped at: Phase 2 context + research gathered; planning next
-`phase1.5`; pending working-tree changes — `scripts/historical/rumsey.py`
-modified and `scripts/historical/allmaps.py` untracked, both part of the
-Allmaps annotation index integration for Phase 2.
-Resume file: .planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-CONTEXT.md
+Last session: 2026-05-15 — Phase 2 planned end-to-end (resume → plan-phase)
+Stopped at: Phase 2 PLANNED — 5 plans / 4 waves verified PASSED (1 revision
+iteration), all coverage gates green, committed at `9ddd6ab`. Next action:
+`/gsd-execute-phase 2`. Working tree clean; nothing to recover.
+Resume notes:
+- Resolved-with-user decisions baked into plans: A6 (Allmaps lookup → ALL
+  annotations, in 02-01), A4 (synthetic per-(source×style), in 02-03),
+  A7 (synthetic target N=100, in 02-03). Do not re-litigate on resume.
+- Execution is NOT fully unattended: 02-03 and 02-04 each halt at a
+  blocking loss-weight `checkpoint:decision` gate; both are `autonomous: false`.
+- Wave order: W0=02-01 (test infra) · W1=02-02+02-03 · W2=02-04 · W3=02-05.
+Resume file: .planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-01-PLAN.md
