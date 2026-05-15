@@ -57,14 +57,23 @@ def test_upweighted_cell_outranks_equal_entropy_forest_cell():
 
 
 def test_season_varies_by_hemisphere():
-    """A southern-hemisphere cell gets a different season than a northern one."""
+    """Each latitude band gets the exact documented full datetime range.
+
+    Asserts the FULL range string (not just the prefix) so a wrong end
+    date / span length (e.g. a 24-month tropics window or a split austral
+    summer) is caught — CR-01.
+    """
     north = coverage.season_for_latitude(45.0)
     south = coverage.season_for_latitude(-35.0)
     tropic = coverage.season_for_latitude(5.0)
     assert north != south
-    assert north.startswith("2023-05-01")          # boreal summer
-    assert south.startswith("2022-11-01")          # austral summer (prev yr)
-    assert tropic != north and tropic != south     # trailing 12 months
+    # Northern temperate: boreal summer May–Sep, within ref_year.
+    assert north == "2023-05-01/2023-09-30"
+    # Southern temperate: ONE contiguous austral summer Dec–Feb.
+    assert south == "2022-12-01/2023-02-28"
+    # Tropics: exactly the trailing 12 months of ref_year.
+    assert tropic == "2023-01-01/2023-12-31"
+    assert tropic != north and tropic != south
 
 
 def test_build_summary_reloads_cache_without_rescanning(tmp_path, mocker):

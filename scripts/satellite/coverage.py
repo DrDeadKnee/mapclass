@@ -68,16 +68,22 @@ def season_for_latitude(lat: float, ref_year: int = 2023) -> str:
     """
     Return a STAC ``datetime`` range string appropriate for ``lat``.
 
-    Northern temperate (lat > 23.5): boreal summer May–Sep.
-    Southern temperate (lat < -23.5): austral summer Nov–Mar (crosses year).
-    Tropics (|lat| <= 23.5): the trailing 12 months — let the cloud filter
-    decide (cloud cover, not season, dominates tropical scene quality).
+    Northern temperate (lat > 23.5): boreal summer May–Sep (5 months,
+    within ``ref_year``).
+    Southern temperate (lat < -23.5): one contiguous austral summer
+    Dec–Feb (3 months, ``ref_year - 1`` Dec through ``ref_year`` Feb) —
+    a single season, not two split summers.
+    Tropics (|lat| <= 23.5): exactly the trailing 12 months of
+    ``ref_year`` — let the cloud filter decide (cloud cover, not season,
+    dominates tropical scene quality).
     """
     if lat > 23.5:
         return f"{ref_year}-05-01/{ref_year}-09-30"
     if lat < -23.5:
-        return f"{ref_year - 1}-11-01/{ref_year}-03-31"
-    return f"{ref_year - 1}-{1:02d}-01/{ref_year}-12-31"
+        # one contiguous austral summer (Dec–Feb), no double-season
+        return f"{ref_year - 1}-12-01/{ref_year}-02-28"
+    # tropics: exactly the trailing 12 months of ref_year
+    return f"{ref_year}-01-01/{ref_year}-12-31"
 
 
 # ---------------------------------------------------------------------------
