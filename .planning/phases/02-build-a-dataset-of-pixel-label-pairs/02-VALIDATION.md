@@ -1,8 +1,8 @@
 ---
 phase: 2
 slug: build-a-dataset-of-pixel-label-pairs
-status: draft
-nyquist_compliant: false
+status: planned
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-05-15
 ---
@@ -96,4 +96,4 @@ created: 2026-05-15
 - [ ] Feedback latency < 30s (quick) / 300s (wave)
 - [ ] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** planner-approved 2026-05-15 (Wave 0 = plan 02-01; all downstream tasks carry <automated> verify or a Wave 0 dependency)

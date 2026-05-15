@@ -70,10 +70,9 @@ consumes the Phase-1 fine-tuned PaliGemma)
      water / coastlines mostly trusted; bare/sparse and snow/ice reliable;
      trees / built-up / cropland heavily downweighted)
   2. Registered historical maps come from Allmaps directly; unregistered maps
-     are emitted to `unregistered_manifest.json` and processed via the
-     PaliGemma-driven semi-automatic registration path (rigid cross-correlation
-     then TPS refinement) with manual MapWarper/QGIS fallback available, all
-     output as warped GeoTIFF in EPSG:4326
+     are emitted to `unregistered_manifest.json` for v2 processing (manual
+     fallback + PaliGemma semi-auto deferred), all registered output as
+     georeferenced GeoTIFF in EPSG:4326
   3. The synthetic pipeline produces matched `image.png` / `land_cover.png` /
      `topography.png` triplets from Azgaar + Pillow with auto-generated ground
      truth and re-normalised height thresholds (flat ≤20, hilly 20–55,
@@ -84,7 +83,13 @@ consumes the Phase-1 fine-tuned PaliGemma)
      3-class taxonomy
   5. A held-out synthetic subset is reserved as the Phase 4 test set and
      guaranteed unseen during training
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 02-01-PLAN.md — Wave 0: pytest framework, Allmaps multi-annotation fix (A6), scope-deferral doc edits
+- [ ] 02-02-PLAN.md — Historical pipeline: Allmaps→IIIF→GeoTIFF (D-01..D-05), v2 manifest
+- [ ] 02-03-PLAN.md — Synthetic pipeline: per-(source×style) output, weights, frozen stratified split (D-15..D-18, EVAL-01)
+- [ ] 02-04-PLAN.md — Satellite pipeline: coverage scan + STAC + COG fetch (D-10..D-14)
+- [ ] 02-05-PLAN.md — Shared nested-pyramid tiler + integration into all 3 builds (D-06..D-09)
 **Status**: in_progress
 
 ### Phase 3: Build a dense semantic segmentation pipeline
@@ -141,6 +146,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
-| 2. Build a dataset of pixel-label pairs | 0/TBD | In progress | - |
+| 2. Build a dataset of pixel-label pairs | 0/5 | In progress | - |
 | 3. Build a dense semantic segmentation pipeline | 0/TBD | Not started | - |
 | 4. Fine-tune, evaluate, and upload the segmentation model | 0/TBD | Not started | - |
