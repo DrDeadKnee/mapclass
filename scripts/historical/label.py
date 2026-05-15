@@ -78,12 +78,17 @@ def _read_rgb(ds: rasterio.DatasetReader) -> np.ndarray:
     n = min(ds.count, 3)
     bands = ds.read(list(range(1, n + 1)))  # (C, H, W)
     if bands.dtype != np.uint8:
-        # Normalise to uint8 range
-        lo, hi = bands.min(), bands.max()
-        if hi > lo:
-            bands = ((bands - lo) / (hi - lo) * 255).astype(np.uint8)
-        else:
-            bands = bands.astype(np.uint8)
+        # WR-06: normalise PER BAND, not with one global min/max — per-band
+        # dynamic ranges differ (16-bit scans, satellite/DEM-derived RGB)
+        # and a single global stretch shifts colour balance / can collapse
+        # a band. Clip before the uint8 cast so the degenerate (hi == lo)
+        # branch cannot silently wrap out-of-range values around.
+        f = bands.astype(np.float64)
+        lo = f.min(axis=(1, 2), keepdims=True)
+        hi = f.max(axis=(1, 2), keepdims=True)
+        span = hi - lo
+        scaled = np.where(span > 0, (f - lo) / np.where(span > 0, span, 1) * 255, 0.0)
+        bands = np.clip(scaled, 0, 255).astype(np.uint8)
     arr = np.moveaxis(bands, 0, -1)  # (H, W, C)
     if arr.shape[2] == 1:
         arr = np.repeat(arr, 3, axis=2)
