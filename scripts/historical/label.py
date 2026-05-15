@@ -98,7 +98,16 @@ def _read_rgb(ds: rasterio.DatasetReader) -> np.ndarray:
         # and a single global stretch shifts colour balance / can collapse
         # a band. Clip before the uint8 cast so the degenerate (hi == lo)
         # branch cannot silently wrap out-of-range values around.
-        f = bands.astype(np.float64)
+        # WR-11: float source rasters (16-bit-scaled scans, DEM-derived
+        # RGB) can carry NaN/Inf nodata. NaN propagates through min/max
+        # across the WHOLE band, np.clip(nan,...) stays nan, and
+        # nan.astype(uint8) is platform-undefined — a silently corrupted
+        # training channel. Replace non-finite values with 0 BEFORE the
+        # per-band min/max reduction so the stretch is computed only over
+        # finite data.
+        f = np.nan_to_num(
+            bands.astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0
+        )
         lo = f.min(axis=(1, 2), keepdims=True)
         hi = f.max(axis=(1, 2), keepdims=True)
         span = hi - lo

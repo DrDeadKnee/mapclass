@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from historical import label as hist_label
-from historical.label import HISTORICAL_LC_WEIGHTS, _to_wgs84_bbox
+from historical.label import HISTORICAL_LC_WEIGHTS, _read_rgb, _to_wgs84_bbox
 
 
 def test_make_labels_writes_all_outputs(tiny_geotiff, tmp_path, mocker):
@@ -90,3 +90,41 @@ def test_normal_reprojected_bbox_still_returned(mocker):
         return_value=(4.0, 50.0, 5.0, 51.0),
     )
     assert _to_wgs84_bbox(ds) == (4.0, 50.0, 5.0, 51.0)
+
+
+# ---------------------------------------------------------------------------
+# WR-11 regression: float source rasters can carry NaN/Inf nodata. These
+# must be sanitized before the per-band min/max stretch so the uint8
+# image channel is finite (not platform-undefined garbage).
+# ---------------------------------------------------------------------------
+
+
+class _FloatDS:
+    """Stand-in dataset whose read() returns a float band stack."""
+
+    def __init__(self, bands):
+        self._bands = bands
+        self.count = bands.shape[0]
+
+    def read(self, indexes):
+        return self._bands[[i - 1 for i in indexes]]
+
+
+def test_read_rgb_sanitizes_nan_and_inf():
+    """NaN/Inf in a float raster do not corrupt the uint8 image (WR-11)."""
+    bands = np.array(
+        [
+            [[np.nan, 10.0], [20.0, 30.0]],
+            [[np.inf, 5.0], [-np.inf, 15.0]],
+            [[0.0, 0.0], [0.0, 0.0]],
+        ],
+        dtype=np.float64,
+    )
+    arr = _read_rgb(_FloatDS(bands))
+
+    assert arr.dtype == np.uint8
+    assert arr.shape == (2, 2, 3)
+    # No non-finite leakage and the stretch produced a real range, not an
+    # all-zero / all-garbage band poisoned by the propagated NaN.
+    assert np.isfinite(arr).all()
+    assert arr[..., 0].max() > 0  # finite values in band 0 still stretched
