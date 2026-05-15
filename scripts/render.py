@@ -94,6 +94,11 @@ def _rings(geom):
         return []
     try:
         if gtype == "Polygon":
+            # A malformed Polygon whose coordinates is a scalar/dict (not a
+            # list of rings) would defer the crash to the caller's draw
+            # loop; reject it here so the feature is skipped (CR-04).
+            if not isinstance(coords, (list, tuple)):
+                return []
             return coords
         if gtype == "MultiPolygon":
             return [ring for poly in coords for ring in poly]
@@ -156,7 +161,11 @@ def render_style(features, min_x, min_y, width, height, style: str) -> Image.Ima
         fill = palette[lc_idx]
 
         for ring in _rings((feat or {}).get("geometry") or {}):
-            coords = [(x - min_x, y - min_y) for x, y in ring]
+            # Slice each position to its first two ordinates: GeoJSON
+            # (RFC 7946) permits a third element (elevation), and a
+            # 3-element coord would otherwise crash the tuple-unpack and
+            # abort the entire source (CR-04), mirroring _bbox hardening.
+            coords = [(pt[0] - min_x, pt[1] - min_y) for pt in ring if len(pt) >= 2]
             if len(coords) < 3:
                 continue
             draw.polygon(coords, fill=fill)
