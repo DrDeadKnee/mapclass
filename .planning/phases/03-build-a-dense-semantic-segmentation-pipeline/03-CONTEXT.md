@@ -40,6 +40,26 @@ evaluation are Phase 4.** Requirements: PHASE-03, EVAL-03.
   nested pyramid (D-07). It is a 2-pass recursive pipeline, not single-pass
   feature fusion. The conv decoder (D-01) may ALSO do internal feature fusion;
   the load-bearing requirement is the coarse→fine predicted-probability feedback.
+- **D-03a: TWO prior-injection variants, both constructed in Phase 3 (resolved
+  with user 2026-05-15 after research found the literal "extra input channels"
+  is impossible against a frozen 3-ch ViT patch-embed).** The prior is 12 raw
+  softmax-probability channels (9 LC + 3 topo), spatially aligned via the
+  `pyramid.json` parent box (D-04, deterministic crop+resize), zeros at the
+  coarsest 896 cold-start. Phase 3 builds BOTH variants as a controlled
+  comparison axis (parallel to the EVAL-03 backbone axis):
+  - **Variant A — "frozen + decoder prior":** every backbone fully frozen; the
+    12 prior channels enter via a small trainable prior-encoder concatenated/
+    summed into the **decoder** at its working resolution. Backbone-agnostic;
+    honors D-06's frozen-backbone literally.
+  - **Variant B — "trainable backbones + input prior":** ALL THREE backbones
+    (SigLIP, DINOv2, Swin) get their first conv / patch-embed widened to 15-ch
+    (3 RGB + 12 prior), extras zero-initialised, pretrained RGB weights kept;
+    the widened patch-embed is trainable. Prior enters at the input (user's
+    original D-03-literal reading).
+  Both variants share the SAME shared conv decoder (D-01/D-02), recursive c2f
+  orchestration (D-04), and unified Backbone protocol (D-05) — they differ ONLY
+  in where the prior enters and what is trainable. Phase 4 trains and compares
+  A vs B (and the EVAL-03 backbone matrix). Neither variant is trained in Phase 3.
 - **D-04: Inference walks Phase-2 `pyramid.json` parent→child literally.**
   Coarse-to-fine traversal follows the stored 896→4×448→16×224 parent→child
   indices that Phase-2 D-07/D-08 purpose-built. No independent
@@ -61,10 +81,18 @@ evaluation are Phase 4.** Requirements: PHASE-03, EVAL-03.
   coarse-to-fine inference, all three backbone variants behind D-05, a
   dataloader over the Phase-2 pyramid dataset (`pyramid.json`,
   image/land_cover/topography/sample_weights, frozen `split.json`), and a
-  forward-pass / output-shape smoke-test on real Phase-2 tiles. **Backbone
-  frozen by default.** Phase 4 owns ALL training/fine-tuning and the joint
-  per-pixel NLL evaluation. No training loop, no overfit-a-batch run, no
-  unfreeze hooks in Phase 3.
+  forward-pass / output-shape smoke-test on real Phase-2 tiles. Phase 4 owns
+  ALL training/fine-tuning and the joint per-pixel NLL evaluation. No training
+  loop, no overfit-a-batch run in Phase 3.
+- **D-06a: Frozen-by-default carve-out for Variant B (resolved with user
+  2026-05-15).** D-06's "backbone frozen / no unfreeze hooks" stands for
+  Variant A. Variant B is an explicit, deliberate exception: Phase 3
+  *constructs* the widened-trainable-patch-embed structural modification for
+  all 3 backbones, but **does not train it** — construction-only still holds.
+  The frozen-vs-trainable performance comparison (A vs B) is Phase 4's job.
+  Phase 3's smoke-test asserts both variants emit correct dense (B,9,H,W) +
+  (B,3,H,W) tensors and that no Gemma/`language_model` parameter is reachable
+  from either seg forward pass (PHASE-03 SC#2).
 
 ### Claude's Discretion
 - Exact conv-decoder topology (channel widths, number of upsample stages, which

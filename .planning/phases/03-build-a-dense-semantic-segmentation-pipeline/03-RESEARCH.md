@@ -391,7 +391,24 @@ def test_no_gemma_in_seg_forward(seg_model):
 | A4 | Recommended prior encoding = raw 12-channel softmax probs, decoder-injected | Pattern 4 | LOW. Explicitly a D-03 discretion call; recommendation is well-justified by the joint-NLL/prior thesis but is a recommendation, not a locked fact. |
 | A5 | timm checkpoint names (`vit_base_patch14_reg4_dinov2.lvd142m`, `swin_base_patch4_window7_224`) | Code Examples | LOW. Family/interface verified; exact tag is a D-05 discretion call — pick final tags at plan time via `timm.list_models("*dinov2*")` / `timm.list_models("swin*")`. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Resolutions recorded 2026-05-15 with the user during `/gsd-plan-phase 3`.
+> See `03-CONTEXT.md` D-03a / D-06a — those are the authoritative locked decisions.
+
+- **OQ1 (adapter path) — RESOLVED: parameterize + skip-with-message.** Plan takes
+  `--adapter-dir` + `--model-id` as parameters; smoke-test skips with a clear
+  message if the adapter is absent. Decide-at-execution; not a planning blocker.
+- **OQ2 (D-03 injection point) — RESOLVED: build BOTH variants (D-03a).** Not a
+  single choice. Phase 3 constructs Variant A (frozen backbones + decoder-level
+  prior, this section's Pattern 4 recommendation) AND Variant B (all-3 backbones'
+  patch-embed widened to 15-ch + trainable, input-level prior). D-06a carves the
+  Variant-B frozen-default exception (construction only — neither trained in
+  Phase 3; Phase 4 trains + compares A vs B). A3's "decoder-level is the only
+  resolution" no longer holds — it is Variant A specifically; Variant B is the
+  user-elected literal-D-03 path built in parallel for comparison.
+- **OQ3 (block taps vs single-scale+PPM) — RESOLVED: Claude's Discretion**
+  (CONTEXT D-01). Adopt the research recommendation (3–4 ViT block taps + PPM).
 
 1. **Exact Phase-1 adapter directory + epoch to load.**
    - What we know: `finetune_paligemma.py` defaults to `checkpoints/paligemma-terrain/epochNN/`, PEFT format, `model-id google/paligemma-3b-pt-224`.
