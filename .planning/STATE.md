@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
+status: ready_to_plan
 stopped_at: Phase 2 PLANNED — 5 plans / 4 waves verified PASSED (1 revision
 last_updated: "2026-05-15T13:02:28.036Z"
 last_activity: 2026-05-15 -- Phase 02 execution started
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 5
   completed_plans: 0
-  percent: 0
+  percent: 25
 ---
 
 # Project State
@@ -27,10 +27,10 @@ joint per-pixel NLL on held-out synthetic maps.
 
 ## Current Position
 
-Phase: 02 (build-a-dataset-of-pixel-label-pairs) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 02
-Last activity: 2026-05-15 -- Phase 02 execution started
+Phase: 3
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-05-15
 working branch `phase1.5`; working tree clean — all Phase 2 planning artifacts
 committed (HEAD `9ddd6ab`). Allmaps integration already tracked as of `1e43917`.
 
@@ -40,7 +40,7 @@ Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
 
 **Velocity:**
 
-- Total plans completed: 1 (Phase 1, executed pre-bootstrap)
+- Total plans completed: 6 (Phase 1, executed pre-bootstrap)
 - Average duration: n/a (pre-bootstrap execution; not tracked)
 - Total execution time: n/a
 
@@ -49,6 +49,7 @@ Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1 | 1 | n/a | n/a |
+| 02 | 5 | - | - |
 
 **Recent Trend:**
 
