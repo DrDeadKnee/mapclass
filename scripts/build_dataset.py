@@ -87,12 +87,16 @@ def template_key(src_id: str) -> str:
 
     Azgaar GeoJSON exports do not carry a heightmap-template name, so the key
     is the source stem with its trailing numeric/index suffix stripped:
-    ``europe_07`` / ``europe-7`` / ``europe7`` → ``europe``. A source with no
-    template-like prefix falls back to the whole sanitized stem (its own
-    stratum), which keeps the splitter correct (never starves a singleton).
+    ``europe_07`` / ``europe-7`` → ``europe``. A separator (``_``/``-``/
+    space) is REQUIRED before the numeric suffix (WR-08) so a stem like
+    ``m12``, ``world2`` or ``r12map`` is NOT split mid-token (the old
+    optional-separator pattern grouped ``m12`` → ``m``).
+    A source with no separator+trailing-digit suffix falls back to the
+    whole sanitized stem (its own stratum), which keeps the splitter
+    correct (never starves a singleton).
     """
     s = _sanitize_stem(src_id)
-    m = re.match(r"^(.*?)[ _\-]*\d+$", s)
+    m = re.match(r"^(.+?)[ _\-]+\d+$", s)
     key = m.group(1) if m and m.group(1) else s
     return key.strip("_-").lower() or s.lower()
 
@@ -135,6 +139,18 @@ def load_or_create_split(out_dir: Path, source_ids) -> set[str]:
     if split_path.exists():
         data = json.loads(split_path.read_text())
         return set(data["test"])
+
+    # WR-08: the template_key heuristic is provisional. Print the derived
+    # {template: [member_ids]} grouping BEFORE freezing split.json so a
+    # human can sanity-check stratification (mis-grouping skews the
+    # EVAL-01 hold-out proportions and is otherwise invisible).
+    grouping: dict[str, list[str]] = {}
+    for sid in source_ids:
+        grouping.setdefault(template_key(sid), []).append(sid)
+    print("  Derived stratification groups (review before split.json is "
+          "frozen — WR-08):")
+    for tmpl in sorted(grouping):
+        print(f"    {tmpl}: {sorted(grouping[tmpl])}")
 
     test_ids = stratified_split(source_ids)
     out_dir.mkdir(parents=True, exist_ok=True)
