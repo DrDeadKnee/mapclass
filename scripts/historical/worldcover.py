@@ -38,6 +38,24 @@ os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
 _WC_BASE = "https://esa-worldcover.s3.amazonaws.com/v200/2021/map"
 _WC_FILENAME = "ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
 
+# WR-07: decompression-bomb guard for untrusted remote rasters/COGs. A
+# maliciously crafted or corrupt dataset can advertise absurd width/height
+# and drive an unbounded array allocation on read. ~2e9 px (≈ a 45000²
+# raster) is far above any legitimate 3° WorldCover / windowed Sentinel
+# tile but caps a hostile one.
+MAX_REMOTE_RASTER_PIXELS = 2_000_000_000
+
+
+def assert_safe_raster_size(ds, source: str = "remote raster") -> None:
+    """Raise ``ValueError`` if an opened dataset exceeds the pixel cap."""
+    px = int(ds.width) * int(ds.height)
+    if px > MAX_REMOTE_RASTER_PIXELS:
+        raise ValueError(
+            f"{source} {ds.width}x{ds.height} ({px} px) exceeds the "
+            f"{MAX_REMOTE_RASTER_PIXELS} px safety cap — refusing to read "
+            f"(decompression-bomb guard, WR-07)"
+        )
+
 # ESA WorldCover class value → canonical 9-class index
 WC_REMAP: dict[int, int] = {
     10: 1,   # tree cover
@@ -117,6 +135,7 @@ def fetch_worldcover(
         url = f"{_WC_BASE}/{_WC_FILENAME.format(tile=tile_id)}"
         try:
             with rasterio.open(url) as tile_ds:
+                assert_safe_raster_size(tile_ds, f"WorldCover tile {tile_id}")
                 reproject(
                     source=rasterio.band(tile_ds, 1),
                     destination=dst,

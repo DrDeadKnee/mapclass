@@ -37,6 +37,7 @@ from historical.worldcover import (
     _WC_FILENAME,
     _tile_name,
     _tile_origins,
+    assert_safe_raster_size,
 )
 
 os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
@@ -125,6 +126,7 @@ def build_summary(
         url = f"{_WC_BASE}/{_WC_FILENAME.format(tile=tile_id)}"
         try:
             with rasterio.open(url) as ds:
+                assert_safe_raster_size(ds, f"WorldCover tile {tile_id}")
                 # Decimated read: out_shape downsamples the 3° tile in-flight.
                 arr = ds.read(
                     1,

@@ -28,6 +28,7 @@ from rasterio.warp import Resampling, calculate_default_transform, reproject
 from rasterio.windows import Window
 
 from historical.georef import write_georeferenced_geotiff
+from historical.worldcover import assert_safe_raster_size
 
 _WGS84 = CRS.from_epsg(4326)
 
@@ -72,6 +73,7 @@ def fetch_visual_window(item, dst_path: Path, dst_window_px: int = 4096):
 
     try:
         with rasterio.open(url) as ds:
+            assert_safe_raster_size(ds, "Sentinel COG")
             win = _centred_window(ds.width, ds.height, dst_window_px)
             rgb = ds.read([1, 2, 3], window=win)  # (3, H, W) uint8
             win_transform = ds.window_transform(win)
