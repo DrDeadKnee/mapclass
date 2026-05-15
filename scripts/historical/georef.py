@@ -40,12 +40,19 @@ def gcps_to_affine(scaled_gcps: list):
     return from_gcps(rasterio_gcps)
 
 
-def write_georeferenced_geotiff(rgb_array: np.ndarray, affine, out_path: Path) -> Path:
+def write_georeferenced_geotiff(
+    rgb_array: np.ndarray, affine, out_path: Path, nodata=None
+) -> Path:
     """
     Write a 3-band uint8 ``(3, H, W)`` array as a georeferenced GeoTIFF.
 
     ``crs`` is fixed to EPSG:4326 and ``transform`` to the supplied affine so the
     file is directly consumable by ``historical.label.make_labels`` (D-03).
+
+    ``nodata`` (optional): when supplied, the value is tagged on the dataset
+    so downstream consumers / tiling can distinguish reproject-uncovered
+    pixels from real imagery (WR-03). This is an additive parameter on the
+    SINGLE shared writer — there is deliberately no forked writer (W-1).
     Returns the written path.
     """
     out_path = Path(out_path)
@@ -61,6 +68,7 @@ def write_georeferenced_geotiff(rgb_array: np.ndarray, affine, out_path: Path) -
         dtype="uint8",
         crs=CRS.from_epsg(4326),
         transform=affine,
+        nodata=nodata,
     ) as ds:
         ds.write(rgb_array)
     return out_path

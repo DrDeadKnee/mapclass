@@ -32,6 +32,13 @@ from historical.worldcover import assert_safe_raster_size
 
 _WGS84 = CRS.from_epsg(4326)
 
+# NODATA sentinel for reproject-uncovered destination pixels (WR-03).
+# 0 collides with legitimate dark imagery, so use the uint8 max — a value
+# that does not appear in the Sentinel-2 TCI dynamic range for a covered
+# pixel often enough to matter, and is explicitly tagged on the GeoTIFF
+# so downstream tiling treats it as nodata rather than real black.
+_NODATA = 255
+
 # Allow anonymous access to public S3 buckets via GDAL VSI-CURL (sentinel-cogs).
 os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
 
@@ -101,8 +108,34 @@ def fetch_visual_window(item, dst_path: Path, dst_window_px: int = 4096):
                     dst_crs=_WGS84,
                     resampling=Resampling.bilinear,
                 )
+
+            # WR-03: the UTM→WGS84 warp of an edge / rotated window leaves
+            # destination pixels uncovered. Left as the zero-fill they are
+            # written as pure-black (0,0,0) and become indistinguishable
+            # from real dark imagery — a silent label/imagery mismatch in
+            # Phase-3 training. Mirror the rest of the pipeline's NODATA
+            # discipline: reproject an all-ones coverage source so any
+            # destination pixel the warp did NOT touch is identifiable, set
+            # those pixels to the NODATA sentinel, and tag it on the file so
+            # downstream tiling can exclude the uncovered region. A separate
+            # coverage band (not "pixel == 0") is used because real imagery
+            # may legitimately contain 0.
+            coverage = np.zeros((dst_h, dst_w), dtype="uint8")
+            reproject(
+                source=np.ones(rgb[0].shape, dtype="uint8"),
+                destination=coverage,
+                src_transform=win_transform,
+                src_crs=src_crs,
+                dst_transform=dst_transform,
+                dst_crs=_WGS84,
+                resampling=Resampling.nearest,
+            )
+            uncovered = coverage == 0
+            rgb_wgs84[:, uncovered] = _NODATA
     except Exception as exc:
         print(f"  Warning: could not read visual window from {url}: {exc}")
         return None
 
-    return write_georeferenced_geotiff(rgb_wgs84, dst_transform, Path(dst_path))
+    return write_georeferenced_geotiff(
+        rgb_wgs84, dst_transform, Path(dst_path), nodata=_NODATA
+    )

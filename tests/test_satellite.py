@@ -144,6 +144,54 @@ def test_fetch_visual_window_writes_wgs84_rgb_geotiff(tmp_path):
         assert ds.count == 3
         assert ds.dtypes[0] == "uint8"
         assert ds.crs == CRS.from_epsg(4326)
+        # WR-03: the NODATA discipline is tagged on the file so downstream
+        # tiling can distinguish reproject-uncovered pixels from real
+        # imagery rather than treating opaque black as land cover.
+        assert ds.nodata == fetch._NODATA
+
+
+def test_fetch_visual_window_marks_uncovered_pixels_nodata(tmp_path):
+    """WR-03: a high-latitude UTM scene whose grid is meridian-rotated
+    relative to WGS84 leaves destination corners uncovered after the warp.
+
+    Those pixels MUST carry the explicit NODATA sentinel (and the tag must
+    be set) instead of the zero-fill that is indistinguishable from real
+    dark imagery — the silent label/imagery mismatch this fix closes.
+    Source values are bounded < _NODATA so any sentinel pixel in the
+    output is unambiguously a reproject-uncovered pixel, not real data.
+    """
+    src = tmp_path / "TCI.tif"
+    w = h = 512
+    # UTM 32N (central meridian 9°E) sampled near 21°E / 70°N: large
+    # meridian convergence ⇒ the UTM grid is strongly rotated w.r.t.
+    # WGS84, so the reprojected raster has substantial uncovered corners.
+    transform = from_origin(900000, 7800000, 10, 10)
+    rng = np.random.default_rng(0)
+    data = rng.integers(0, fetch._NODATA, (3, h, w)).astype(np.uint8)
+    with rasterio.open(
+        src, "w", driver="GTiff", width=w, height=h, count=3,
+        dtype="uint8", crs=CRS.from_epsg(32632), transform=transform,
+    ) as ds:
+        ds.write(data)
+
+    class _Asset:
+        href = str(src)
+
+    class _Item:
+        assets = {"visual": _Asset()}
+        properties = {"eo:cloud_cover": 2.0}
+
+    out = fetch.fetch_visual_window(_Item(), tmp_path / "out.tif", dst_window_px=256)
+    assert out is not None
+    with rasterio.open(out) as ds:
+        assert ds.nodata == fetch._NODATA
+        band1 = ds.read(1)
+        # Source data is strictly < _NODATA, so any sentinel pixel can only
+        # be a reproject-uncovered destination pixel.
+        assert (band1 == fetch._NODATA).any(), (
+            "expected reproject-uncovered pixels marked NODATA"
+        )
+        assert (band1 != fetch._NODATA).any()  # real imagery survived
 
 
 def test_fetch_visual_window_missing_asset_returns_none(tmp_path):
