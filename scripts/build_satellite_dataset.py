@@ -108,6 +108,7 @@ def cmd_search_regions(
     drops = {
         "ok": 0,
         "no_qualifying_scene": 0,
+        "missing_visual_asset": 0,
         "stac_search_failed": 0,
     }
     resolved: list[dict] = []
@@ -131,8 +132,12 @@ def cmd_search_regions(
         try:
             visual_href = item.assets["visual"].href
         except (KeyError, AttributeError, TypeError):
+            # WR-03: a resolved scene that lacks the TCI/visual asset is a
+            # DISTINCT drop reason from "no scene under the cloud
+            # threshold" — conflating them corrupts the D-13 per-reason
+            # accounting that the phase requires to be loud and accurate.
             print(f"  {rid}: resolved scene has no 'visual' asset")
-            drops["no_qualifying_scene"] += 1
+            drops["missing_visual_asset"] += 1
             continue
 
         resolved.append({
