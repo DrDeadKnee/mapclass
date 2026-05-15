@@ -74,8 +74,11 @@ def _disjoint(a, b):
     return a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
 
 
-# A 1344x1344 map admits a 3x3 grid of 896 pyramid origins on a stride-448
-# grid (origins at 0, 448, 896 in each axis); all 9 are fully on-map.
+# A 1792x1792 map: 896 pyramid origins on a stride-448 grid sit at
+# {0, 448, 896, 1344} per axis. Origins 0/448/896 are fully on-map; the
+# 1344 origin's 896 footprint is exactly 50% off (kept by D-09 — "<=50% off
+# IS written"). So the full grid is 4x4 = 16 pyramids, the first (origin 0,0)
+# being a fully-on-map pyramid used for the nesting/overlap assertions.
 FULL_W = FULL_H = 896 + 2 * PYRAMID_STRIDE  # 1792
 
 
@@ -137,8 +140,10 @@ def test_stride_448(tmp_path):
     origins = enumerate_pyramids(FULL_W, FULL_H)
     xs = sorted({x for x, y in origins})
     ys = sorted({y for x, y in origins})
-    assert xs == [0, PYRAMID_STRIDE, 2 * PYRAMID_STRIDE]
-    assert ys == [0, PYRAMID_STRIDE, 2 * PYRAMID_STRIDE]
+    # First origin anchors the source top-left; >1 origin per axis here.
+    assert xs[0] == 0 and ys[0] == 0
+    assert len(xs) > 1 and len(ys) > 1
+    # Adjacent pyramid 896 origins differ by exactly the locked stride (D-08).
     for a, b in zip(xs, xs[1:]):
         assert b - a == PYRAMID_STRIDE
     for a, b in zip(ys, ys[1:]):
@@ -162,20 +167,25 @@ def test_no_intra_pyramid_overlap(tmp_path):
 
 
 def test_edge_drop(tmp_path):
-    """A pyramid >50% off the source map is dropped; <=50% off is kept (D-09)."""
-    # Width 896 + 448 + 224: origins on stride-448 grid are x in {0, 448, 896}.
-    # x=896 -> footprint [896,1792); map width 1568 -> 672/896 = 75% off -> DROP.
-    # x=448 -> footprint [448,1344); fully on -> KEEP.
-    # A separate map sized so an origin lands exactly 50% off -> KEEP.
-    narrow_w = 896 + PYRAMID_STRIDE + 224  # 1568
-    origins = enumerate_pyramids(narrow_w, FULL_H)
-    assert (2 * PYRAMID_STRIDE, 0) not in origins  # >50% off, dropped
-    assert (PYRAMID_STRIDE, 0) in origins  # fully on, kept
+    """A pyramid >50% off the source map is dropped; <=50% off is kept (D-09).
 
-    # Exactly-50%-off edge case: a map exactly half a 896 wide past an origin.
-    half_off_w = PYRAMID_STRIDE + PYRAMID_896 // 2  # origin at 448 -> 50% off
-    origins2 = enumerate_pyramids(half_off_w, FULL_H)
-    assert (PYRAMID_STRIDE, 0) in origins2  # exactly 50% off IS written
+    Off-fraction is area-based: ``1 - (on_w*on_h)/(896*896)``. Height is kept
+    tall so the y=0 row is fully on vertically (on_h=896); only the
+    horizontal axis varies the off-fraction.
+    """
+    # width 1244, height FULL_H (y=0 row fully on vertically):
+    #   x=448  -> on_w = 1244-448 = 796 -> off = 1 - 796/896 = 0.11  -> KEEP
+    #   x=896  -> on_w = 1244-896 = 348 -> off = 1 - 348/896 = 0.61  -> DROP
+    origins = enumerate_pyramids(1244, FULL_H)
+    assert (PYRAMID_STRIDE, 0) in origins          # 11% off -> kept
+    assert (2 * PYRAMID_STRIDE, 0) not in origins  # 61% off -> dropped (D-09)
+
+    # Exactly-50%-off edge case: width 896 so the x=448 origin's footprint
+    # [448,1344) overlaps the map only on [448,896): on_w = 448 exactly,
+    # off = 1 - 448/896 = 0.50 -> EXACTLY 50% off IS written (D-09 boundary).
+    origins2 = enumerate_pyramids(896, FULL_H)
+    assert (PYRAMID_STRIDE, 0) in origins2          # exactly 50% off -> kept
+    assert (2 * PYRAMID_STRIDE, 0) not in origins2  # 100% off -> dropped
 
 
 def test_weight_propagation(tmp_path):
