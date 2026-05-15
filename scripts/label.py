@@ -34,6 +34,25 @@ WATER_TOPO = 255  # sentinel: water cells have no topography class
 _MAX_CANVAS_DIM = 20000
 
 
+def _xy(pt):
+    """Return ``(x, y)`` floats for a GeoJSON position, or ``None`` if the
+    element is malformed in *any* way.
+
+    Three iterations (CR-03 → CR-04 → CR-01) chased individual malformed
+    element shapes (missing z, scalar element, string element) with
+    piecemeal per-element guards. This helper is the single structural
+    chokepoint: it rejects non-sequences, short sequences, and
+    non-numeric ordinates uniformly, so no element shape can reach the
+    arithmetic / ``min``/``max`` path and abort the source (T-02-09).
+    """
+    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+        return None
+    try:
+        return float(pt[0]), float(pt[1])
+    except (TypeError, ValueError):
+        return None
+
+
 def _rings(geom: dict) -> list[list[tuple[float, float]]]:
     """Return the coordinate rings of a Polygon/MultiPolygon geometry.
 
@@ -70,14 +89,25 @@ def _bbox(features: list) -> tuple[float, float, float, float]:
     """
     xs, ys = [], []
     for feat in features:
-        geom = (feat or {}).get("geometry") or {}
-        if geom.get("type") not in ("Polygon", "MultiPolygon"):
+        # Structurally resilient: ANY malformed feature/ring (regardless of
+        # element shape) is skipped, never aborts the whole source (CR-01 /
+        # WR-01 / T-02-09 / D-13). _xy rejects non-numeric / short / scalar
+        # elements so a single bad point cannot corrupt the canvas bounds.
+        try:
+            geom = (feat or {}).get("geometry") or {}
+            if geom.get("type") not in ("Polygon", "MultiPolygon"):
+                continue
+            for ring in _rings(geom):
+                try:
+                    for pt in ring:
+                        xy = _xy(pt)
+                        if xy is not None:
+                            xs.append(xy[0])
+                            ys.append(xy[1])
+                except (TypeError, ValueError, KeyError, IndexError):
+                    continue
+        except (TypeError, ValueError, KeyError, IndexError):
             continue
-        for ring in _rings(geom):
-            for pt in ring:
-                if len(pt) >= 2:
-                    xs.append(pt[0])
-                    ys.append(pt[1])
     if not xs:
         raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
     return min(xs), min(ys), max(xs), max(ys)
@@ -114,30 +144,44 @@ def make_label_arrays(geojson_path: str | Path):
     topo_draw = ImageDraw.Draw(topo_img)
 
     for feat in features:
-        props = (feat or {}).get("properties") or {}
+        # Per-feature structural resilience: any malformed feature/ring —
+        # regardless of element shape (missing z, scalar, string, empty
+        # ring) — is skipped + drop-counted, never aborts the source
+        # (CR-01 / T-02-09 / D-13). One try/except replaces the Nth
+        # element-shape patch.
         try:
-            biome = int(props["biome"])
-            h = int(props["height"])
-        except (KeyError, TypeError, ValueError):
-            # Missing/non-numeric biome|height — skip this feature, do not
-            # abort the whole source (CR-03).
-            continue
-
-        lc_class = h_to_landcover(h, biome)
-        topo_class = h_to_topo(h)
-        topo_fill = topo_class if topo_class is not None else WATER_TOPO
-
-        for ring in _rings((feat or {}).get("geometry") or {}):
-            # Shift coordinates so origin is (0, 0). Slice each position to
-            # its first two ordinates: GeoJSON (RFC 7946) permits a third
-            # element (elevation), and a 3-element coord would otherwise
-            # crash the tuple-unpack and abort the entire source (CR-04),
-            # mirroring the _bbox `len(pt) >= 2` hardening.
-            coords = [(pt[0] - min_x, pt[1] - min_y) for pt in ring if len(pt) >= 2]
-            if len(coords) < 3:
+            props = (feat or {}).get("properties") or {}
+            try:
+                biome = int(props["biome"])
+                h = int(props["height"])
+            except (KeyError, TypeError, ValueError):
+                # Missing/non-numeric biome|height — skip this feature, do
+                # not abort the whole source (CR-03).
                 continue
-            lc_draw.polygon(coords, fill=lc_class)
-            topo_draw.polygon(coords, fill=topo_fill)
+
+            lc_class = h_to_landcover(h, biome)
+            topo_class = h_to_topo(h)
+            topo_fill = topo_class if topo_class is not None else WATER_TOPO
+
+            for ring in _rings((feat or {}).get("geometry") or {}):
+                try:
+                    # Shift coordinates so origin is (0, 0). _xy defensively
+                    # coerces each position and rejects any element that is
+                    # not a real (x, y) pair, so no element shape can crash
+                    # the draw loop (CR-01 / WR-01).
+                    coords = []
+                    for pt in ring:
+                        xy = _xy(pt)
+                        if xy is not None:
+                            coords.append((xy[0] - min_x, xy[1] - min_y))
+                    if len(coords) < 3:
+                        continue
+                    lc_draw.polygon(coords, fill=lc_class)
+                    topo_draw.polygon(coords, fill=topo_fill)
+                except (TypeError, ValueError, KeyError, IndexError):
+                    continue
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
 
     return lc_img, topo_img
 

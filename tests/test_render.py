@@ -67,6 +67,7 @@ def test_shared_label_byte_identical(sample_azgaar_geojson, tmp_path):
 
 def _write_geojson(tmp_path, features):
     fc = {"type": "FeatureCollection", "features": features}
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "src.geojson"
     path.write_text(json.dumps(fc))
     return path
@@ -146,6 +147,101 @@ def test_malformed_polygon_scalar_coords_skipped(tmp_path):
     lc_img, topo_img = make_label_arrays(path)
     # The valid sibling was drawn despite the malformed feature.
     assert min(lc_img.getdata()) < 255
+
+
+def _malformed_rings_collection():
+    """A feature collection mixing several differently-malformed rings with
+    one valid sibling — the structural T-02-09 contract (CR-01 / WR-01)."""
+    return [
+        # missing-z is fine; a *scalar* element inside an otherwise valid
+        # ring used to TypeError on len(5) and abort the whole source.
+        {
+            "type": "Feature",
+            "properties": {"biome": 6, "height": 35},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], 5, [40, 0], [40, 40], [0, 40]]],
+            },
+        },
+        # non-numeric string element: passes a len() guard then crashes the
+        # arithmetic / min() reduction.
+        {
+            "type": "Feature",
+            "properties": {"biome": 1, "height": 80},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], "ab", [40, 0], [40, 40], [0, 40]]],
+            },
+        },
+        # empty ring.
+        {
+            "type": "Feature",
+            "properties": {"biome": 3, "height": 50},
+            "geometry": {"type": "Polygon", "coordinates": [[]]},
+        },
+        # missing-z (3-element absent): a plain valid 2D ring sibling that
+        # MUST still rasterize despite all the malformed siblings above.
+        {
+            "type": "Feature",
+            "properties": {"biome": 1, "height": 80},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], [60, 0], [60, 60], [0, 60], [0, 0]]],
+            },
+        },
+    ]
+
+
+def test_mixed_malformed_rings_do_not_abort_label(tmp_path):
+    """Several differently-malformed rings are skipped; the valid sibling
+    still produces output (CR-01 / WR-01 / T-02-09 structural contract)."""
+    path = _write_geojson(tmp_path, _malformed_rings_collection())
+    lc_img, topo_img = make_label_arrays(path)
+    assert lc_img.size == topo_img.size
+    assert lc_img.size[0] > 0 and lc_img.size[1] > 0
+    # The valid sibling was actually drawn (not all-NODATA).
+    assert min(lc_img.getdata()) < 255
+
+
+def test_mixed_malformed_rings_do_not_abort_render(tmp_path):
+    """render_one survives a collection of mixed-malformed rings (CR-01)."""
+    path = _write_geojson(tmp_path, _malformed_rings_collection())
+    img = render_one(path, "flat")
+    assert img.size[0] > 0 and img.size[1] > 0
+
+
+def test_malformed_point_does_not_corrupt_bbox(tmp_path):
+    """WR-01: an injected malformed point must not alter the canvas bounds.
+
+    The bbox computed from a clean ring must be byte-identical to the bbox
+    of the same ring with scalar/string garbage points spliced in — the
+    bad points are rejected by _xy, not folded into min()/max().
+    """
+    clean = [
+        {
+            "type": "Feature",
+            "properties": {"biome": 1, "height": 80},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[10, 10], [70, 10], [70, 70], [10, 70], [10, 10]]],
+            },
+        }
+    ]
+    dirty = [
+        {
+            "type": "Feature",
+            "properties": {"biome": 1, "height": 80},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[10, 10], 999, "zz", [70, 10], [70, 70], [10, 70], [10, 10]]
+                ],
+            },
+        }
+    ]
+    clean_img, _ = make_label_arrays(_write_geojson(tmp_path / "c", clean))
+    dirty_img, _ = make_label_arrays(_write_geojson(tmp_path / "d", dirty))
+    assert clean_img.size == dirty_img.size
 
 
 # ---------------------------------------------------------------------------

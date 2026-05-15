@@ -83,6 +83,24 @@ BACKGROUND = {
 }
 
 
+def _xy(pt):
+    """Return ``(x, y)`` floats for a GeoJSON position, or ``None`` if the
+    element is malformed in *any* way.
+
+    Single structural chokepoint mirroring ``label._xy``: rejects
+    non-sequences, short sequences, and non-numeric ordinates uniformly so
+    no element shape (missing z, scalar, string, empty) can reach the
+    arithmetic / ``min``/``max`` path and abort the source (CR-01 /
+    WR-01 / T-02-09).
+    """
+    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+        return None
+    try:
+        return float(pt[0]), float(pt[1])
+    except (TypeError, ValueError):
+        return None
+
+
 def _rings(geom):
     """Coordinate rings of a Polygon/MultiPolygon; ``[]`` for anything
     else / malformed so callers skip rather than crash (CR-03)."""
@@ -129,14 +147,25 @@ def _canvas_dims(min_x, min_y, max_x, max_y):
 def _bbox(features):
     xs, ys = [], []
     for feat in features:
-        geom = (feat or {}).get("geometry") or {}
-        if geom.get("type") not in ("Polygon", "MultiPolygon"):
+        # Structurally resilient: ANY malformed feature/ring (regardless of
+        # element shape) is skipped, never aborts the whole source (CR-01 /
+        # WR-01 / T-02-09 / D-13). _xy rejects non-numeric / short / scalar
+        # elements so a single bad point cannot corrupt the canvas bounds.
+        try:
+            geom = (feat or {}).get("geometry") or {}
+            if geom.get("type") not in ("Polygon", "MultiPolygon"):
+                continue
+            for ring in _rings(geom):
+                try:
+                    for pt in ring:
+                        xy = _xy(pt)
+                        if xy is not None:
+                            xs.append(xy[0])
+                            ys.append(xy[1])
+                except (TypeError, ValueError, KeyError, IndexError):
+                    continue
+        except (TypeError, ValueError, KeyError, IndexError):
             continue
-        for ring in _rings(geom):
-            for pt in ring:
-                if len(pt) >= 2:
-                    xs.append(pt[0])
-                    ys.append(pt[1])
     if not xs:
         raise ValueError("GeoJSON has no usable Polygon/MultiPolygon geometry")
     return min(xs), min(ys), max(xs), max(ys)
@@ -151,26 +180,41 @@ def render_style(features, min_x, min_y, width, height, style: str) -> Image.Ima
     draw = ImageDraw.Draw(img)
 
     for feat in features:
-        props = (feat or {}).get("properties") or {}
+        # Per-feature structural resilience: any malformed feature/ring —
+        # regardless of element shape (missing z, scalar, string, empty
+        # ring) — is skipped, never aborts the source (CR-01 / T-02-09 /
+        # D-13). One try/except replaces the Nth element-shape patch.
         try:
-            h = int(props["height"])
-            biome = int(props["biome"])
-        except (KeyError, TypeError, ValueError):
-            continue  # skip malformed feature (CR-03), do not abort source
-        lc_idx = h_to_landcover(h, biome)
-        fill = palette[lc_idx]
+            props = (feat or {}).get("properties") or {}
+            try:
+                h = int(props["height"])
+                biome = int(props["biome"])
+            except (KeyError, TypeError, ValueError):
+                continue  # skip malformed feature (CR-03), do not abort source
+            lc_idx = h_to_landcover(h, biome)
+            fill = palette[lc_idx]
 
-        for ring in _rings((feat or {}).get("geometry") or {}):
-            # Slice each position to its first two ordinates: GeoJSON
-            # (RFC 7946) permits a third element (elevation), and a
-            # 3-element coord would otherwise crash the tuple-unpack and
-            # abort the entire source (CR-04), mirroring _bbox hardening.
-            coords = [(pt[0] - min_x, pt[1] - min_y) for pt in ring if len(pt) >= 2]
-            if len(coords) < 3:
-                continue
-            draw.polygon(coords, fill=fill)
-            if border_color and border_width > 0:
-                draw.polygon(coords, outline=border_color, width=border_width)
+            for ring in _rings((feat or {}).get("geometry") or {}):
+                try:
+                    # _xy defensively coerces each position and rejects any
+                    # element that is not a real (x, y) pair, so no element
+                    # shape can crash the draw loop (CR-01 / WR-01).
+                    coords = []
+                    for pt in ring:
+                        xy = _xy(pt)
+                        if xy is not None:
+                            coords.append((xy[0] - min_x, xy[1] - min_y))
+                    if len(coords) < 3:
+                        continue
+                    draw.polygon(coords, fill=fill)
+                    if border_color and border_width > 0:
+                        draw.polygon(
+                            coords, outline=border_color, width=border_width
+                        )
+                except (TypeError, ValueError, KeyError, IndexError):
+                    continue
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
 
     if style == "satellite":
         # Slight blur to mimic sensor smoothing
