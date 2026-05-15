@@ -72,13 +72,18 @@ def _to_wgs84_bbox(ds: rasterio.DatasetReader) -> tuple[float, float, float, flo
         densify_pts=21,
     )
     if west > east:
-        # Antimeridian-crossing extent yields an inside-out bbox. Downstream
-        # tile enumeration cannot handle a split query here; warn loudly so
-        # the resulting NODATA is not mistaken for clean data.
-        print(
-            f"  Warning: WGS84 bbox crosses the antimeridian "
-            f"(west={west:.4f} > east={east:.4f}) — tile coverage for this "
-            f"source may be incomplete (WR-09)."
+        # Antimeridian-crossing extent yields an inside-out bbox
+        # (west > east). Downstream tile enumeration (_tile_origins) does
+        # `while lon < east` starting from floor(west/3)*3 > east, so the
+        # loop body never runs and EVERY tile is NODATA — a silently blank
+        # label pair that Phase 3 would train on. Raise so build_one_source
+        # / _process_one drop-counts this source loudly (D-13) instead of
+        # emitting corrupted data (WR-10; supersedes the WR-09 warn-only).
+        raise ValueError(
+            f"WGS84 bbox crosses the antimeridian "
+            f"(west={west:.4f} > east={east:.4f}); split-query tile "
+            f"enumeration is unsupported — dropping source rather than "
+            f"emitting an all-NODATA label pair (WR-10)"
         )
     return west, south, east, north
 

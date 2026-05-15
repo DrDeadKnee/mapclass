@@ -13,9 +13,10 @@ keep the test offline (the contract under test is the writer, not the fetch).
 import json
 
 import numpy as np
+import pytest
 
 from historical import label as hist_label
-from historical.label import HISTORICAL_LC_WEIGHTS
+from historical.label import HISTORICAL_LC_WEIGHTS, _to_wgs84_bbox
 
 
 def test_make_labels_writes_all_outputs(tiny_geotiff, tmp_path, mocker):
@@ -41,3 +42,51 @@ def test_make_labels_writes_all_outputs(tiny_geotiff, tmp_path, mocker):
     assert weights["source"] == "historical"
     assert set(weights["land_cover_weights"].keys()) == set(HISTORICAL_LC_WEIGHTS.keys())
     assert "topography_weight" in weights
+
+
+# ---------------------------------------------------------------------------
+# WR-10 regression: an antimeridian-crossing extent yields an inside-out
+# WGS84 bbox (west > east). Tile enumeration would produce an all-NODATA
+# label pair, so _to_wgs84_bbox must RAISE (accounted drop) rather than
+# warn-and-return the corrupt bbox.
+# ---------------------------------------------------------------------------
+
+
+class _Bounds:
+    def __init__(self, left, bottom, right, top):
+        self.left, self.bottom, self.right, self.top = left, bottom, right, top
+
+
+class _FakeDS:
+    """Minimal rasterio-dataset stand-in for _to_wgs84_bbox."""
+
+    def __init__(self, crs, bounds):
+        self.crs = crs
+        self.bounds = bounds
+
+
+def test_antimeridian_bbox_raises_instead_of_silent_nodata(mocker):
+    """west > east must raise so the source is drop-counted (WR-10)."""
+    from rasterio.crs import CRS
+
+    # A non-WGS84 CRS forces the densified transform_bounds path.
+    ds = _FakeDS(CRS.from_epsg(3857), _Bounds(0, 0, 10, 10))
+    # Simulate an antimeridian-crossing reprojection: west > east.
+    mocker.patch(
+        "rasterio.warp.transform_bounds",
+        return_value=(170.0, -10.0, -170.0, 10.0),
+    )
+    with pytest.raises(ValueError, match="antimeridian"):
+        _to_wgs84_bbox(ds)
+
+
+def test_normal_reprojected_bbox_still_returned(mocker):
+    """A well-formed reprojected bbox (west < east) is returned intact."""
+    from rasterio.crs import CRS
+
+    ds = _FakeDS(CRS.from_epsg(3857), _Bounds(0, 0, 10, 10))
+    mocker.patch(
+        "rasterio.warp.transform_bounds",
+        return_value=(4.0, 50.0, 5.0, 51.0),
+    )
+    assert _to_wgs84_bbox(ds) == (4.0, 50.0, 5.0, 51.0)
