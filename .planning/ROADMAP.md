@@ -114,7 +114,13 @@ first-kernel ConvNet trained from scratch is a stretch goal.
      producing predictions that incorporate broad spatial context
   4. DINOv2 and Swin Transformer backbone variants run on the same input
      pipeline and are usable as benchmark baselines for Phase 4 evaluation
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 03-01-PLAN.md — Wave 0: timm + transformers-path resolution; seg test infra (mini-pyramid fixture + 6 scaffolds)
+- [ ] 03-02-PLAN.md — Backbone protocol + SigLIP/DINOv2/Swin + Variant-B widened 15-ch patch-embed (D-05/D-03a)
+- [ ] 03-03-PLAN.md — PyramidDataset over Phase-2 tree, train/-only, weights surfaced unchanged (D-06)
+- [ ] 03-04-PLAN.md — Shared UPerNet PPM+FPN conv decoder + two thin task heads (D-01/D-02)
+- [ ] 03-05-PLAN.md — SegModel assembly (both D-03a variants) + recursive c2f orchestrator + smoke (D-03/D-04)
 **Status**: not_started
 
 ### Phase 4: Fine-tune and evaluate the segmentation model, then upload to HuggingFace
@@ -147,5 +153,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
 | 2. Build a dataset of pixel-label pairs | 0/5 | In progress | - |
-| 3. Build a dense semantic segmentation pipeline | 0/TBD | Not started | - |
+| 3. Build a dense semantic segmentation pipeline | 0/5 | Not started | - |
 | 4. Fine-tune, evaluate, and upload the segmentation model | 0/TBD | Not started | - |
