@@ -59,9 +59,14 @@ _HERE = Path(__file__).parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import tiling
 from label import make_label_arrays
 from render import render_one
 from synthetic_weights import write_sample_weights
+
+_REQUIRED_MAP_FILES = (
+    "image.png", "land_cover.png", "topography.png", "sample_weights.json",
+)
 
 _STYLE_SEP = "__"
 _SPLIT_SEED = 42          # D-16 — fixed for reproducibility; never change.
@@ -172,6 +177,18 @@ def build_one_source(
         lc_img.save(out / "land_cover.png")
         topo_img.save(out / "topography.png")
         write_sample_weights(out, geojson_path.stem)
+
+        # Tile into nested pyramids. ``out`` already lives under the train/ or
+        # test/ root the caller routed this whole source into, and the tiler
+        # defaults to ``out/pyramids`` — so every pyramid of a held-out source
+        # stays on the test/ side, never crossing the frozen split boundary
+        # (EVAL-01 zero-leakage, T-02-15). Guard partial dirs (T-02-16).
+        missing = [f for f in _REQUIRED_MAP_FILES if not (out / f).exists()]
+        if missing:
+            print(f"  SKIP tiling {out.parent.name}/{out.name}: missing "
+                  f"{', '.join(missing)}")
+        else:
+            tiling.tile(out)
 
         created.append(out)
         print(f"  built {out.parent.name}/{out.name}  ({lc_img.width}x{lc_img.height}px)")
