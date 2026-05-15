@@ -119,6 +119,27 @@ def test_no_train_test_intersection(tmp_path, sample_azgaar_geojson):
             assert not (out / "train" / f"{sid}{bd._STYLE_SEP}{style}").exists()
 
 
+def test_build_aborts_on_sanitization_collision(tmp_path, sample_azgaar_geojson):
+    """Two raw stems that sanitize to the same src_id abort the build (CR-02).
+
+    ``map.v2`` and ``map v2`` both sanitize to ``map_v2``. Building them
+    silently would collapse them into one dir (data loss) and could leak
+    across the frozen train/test boundary, so ``build`` must fail loud
+    BEFORE computing the split.
+    """
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    shutil.copy(sample_azgaar_geojson, raw / "map.v2.geojson")
+    shutil.copy(sample_azgaar_geojson, raw / "map v2.geojson")
+    out = tmp_path / "synthetic"
+
+    with pytest.raises(SystemExit) as exc:
+        bd.build(raw, out, styles=("flat",))
+    assert exc.value.code == 1
+    # Aborted before any split was frozen.
+    assert not (out / bd._SPLIT_FILENAME).exists()
+
+
 def test_split_manifest_frozen(tmp_path, sample_azgaar_geojson):
     """Rebuilding with new sources never changes split.json's test-ID list."""
     source_ids = _fixture_ids(4, ["alpha", "beta", "gamma"])

@@ -213,6 +213,24 @@ def build(raw_dir: str | Path, output_dir: str | Path,
               f"not hard-failing.")
 
     source_ids = [_sanitize_stem(g.stem) for g in geojsons]
+
+    # CR-02: distinct raw stems can sanitize to the SAME src_id (e.g.
+    # ``europe (1)`` and ``europe-1`` → ``europe_1``). That collapses both
+    # sources into one ``<src_id>__<style>/`` dir (silent data loss) and,
+    # worse, can route a colliding pair across the frozen train/test
+    # boundary (EVAL-01 leakage). Fail loudly BEFORE any build/split.
+    collisions: dict[str, list[str]] = {}
+    for g, sid in zip(geojsons, source_ids):
+        collisions.setdefault(sid, []).append(g.name)
+    dupes = {sid: names for sid, names in collisions.items() if len(names) > 1}
+    if dupes:
+        print("FATAL: source stems collide after sanitization — rename the "
+              "raw .geojson files; aborting to protect the frozen split "
+              "(EVAL-01).")
+        for sid in sorted(dupes):
+            print(f"  {sid!r} <- {sorted(dupes[sid])}")
+        sys.exit(1)
+
     test_ids = load_or_create_split(output_dir, source_ids)
     print(f"  split.json: {len(test_ids)} held-out test source(s) (frozen)")
 
