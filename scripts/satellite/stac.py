@@ -74,7 +74,13 @@ def find_lowest_cloud_scene(bbox, datetime_range, max_cloud: float = 10):
                 query={"eo:cloud_cover": {"lt": max_cloud}},
             )
             items = list(search.items())
-        except Exception as exc:  # network / server / parse failure
+        except (TypeError, ValueError, AttributeError):
+            # WR-04: deterministic programming / bad-input errors (bad bbox
+            # shape, invalid datetime string, a pystac API change) are NOT
+            # transient — retrying wastes ~6s+ per region and obscures the
+            # real cause. Propagate immediately without retry/backoff.
+            raise
+        except Exception as exc:  # transient network / server failure
             if attempt == _MAX_RETRIES - 1:
                 raise StacLookupError(
                     f"STAC search failed for bbox={bbox} "
