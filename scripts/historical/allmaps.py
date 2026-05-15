@@ -11,7 +11,8 @@ Lookup endpoint:
     GET https://annotations.allmaps.org/?url=<URL-encoded manifest URL>
 
 Outcomes:
-    200 with items[] — map is in Allmaps, GCPs available
+    200 with items[] — map is in Allmaps; ALL parseable annotations returned
+                        (a multi-canvas atlas yields one entry per canvas)
     404 "Manifest not found" — IIIF manifest is valid but not in Allmaps
     500 "Invalid IIIF data" — manifest URL is malformed; skip
     Other — transient network/server issues
@@ -42,12 +43,13 @@ class AllmapsLookupError(RuntimeError):
     """Raised for unexpected (non-404/500) failures during Allmaps lookup."""
 
 
-def lookup(manifest_url: str) -> Optional[dict]:
+def lookup(manifest_url: str) -> list[dict]:
     """
-    Return parsed georeferencing data for a IIIF manifest, or None if Allmaps
-    has no annotation for it (404) or the manifest is invalid (500).
+    Return parsed georeferencing data for every annotation Allmaps holds for
+    a IIIF manifest. A multi-canvas atlas is georeferenced canvas-by-canvas;
+    each canvas is an independent map and is returned as its own dict.
 
-    Returned dict:
+    Each returned dict:
         {
             "gcps":          list of ((x_px, y_px), (lng, lat)) tuples,
             "bbox":          (west, south, east, north) WGS84 envelope of GCPs,
@@ -59,8 +61,11 @@ def lookup(manifest_url: str) -> Optional[dict]:
             "annotation_id":  W3C Annotation @id for this map's record,
         }
 
-    Returns None for both "not in Allmaps" and "invalid IIIF" — callers should
-    treat both the same: defer to manual / semi-automatic georeferencing.
+    Returns an empty list ``[]`` for "not in Allmaps" (404), "invalid IIIF"
+    (500), no items, and the all-malformed case. Callers (rumsey.py) treat an
+    empty list as not_in_allmaps / gcps_insufficient for D-04 drop
+    classification, and a list of length N as N separate maps (each becomes
+    its own ``<map>__plate<i>/`` directory downstream).
     """
     url = f"{_ALLMAPS_LOOKUP}?url={quote(manifest_url, safe='')}"
 
@@ -74,7 +79,7 @@ def lookup(manifest_url: str) -> Optional[dict]:
             continue
 
         if resp.status_code in (404, 500):
-            return None  # not in Allmaps / invalid manifest — same caller action
+            return []  # not in Allmaps / invalid manifest — same caller action
 
         if resp.status_code in (429, 503):
             time.sleep(_BACKOFF_BASE ** attempt)
@@ -92,13 +97,15 @@ def lookup(manifest_url: str) -> Optional[dict]:
 
         items = data.get("items") or []
         if not items:
-            return None
+            return []
 
-        # Use the first annotation. Allmaps occasionally has multiple
-        # georeferencings per manifest (different contributors / canvases);
-        # the first is the canonical / latest one.
-        ann = items[0]
-        return _parse_annotation(ann)
+        # A manifest can carry multiple georeferencings — one per canvas of a
+        # multi-canvas atlas, or several contributor records. Parse every one;
+        # _parse_annotation returns None for malformed / <3-GCP records, which
+        # we drop. Each surviving annotation is an independent map downstream
+        # (resolved decision A6 / Pitfall 3).
+        parsed = [_parse_annotation(ann) for ann in items]
+        return [p for p in parsed if p is not None]
 
     raise AllmapsLookupError(f"exhausted retries for {url}")
 
