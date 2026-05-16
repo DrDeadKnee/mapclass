@@ -104,12 +104,10 @@ Items acknowledged and carried forward:
 
 ## Session Continuity
 
-Last session: 2026-05-16T02:21:42.654Z
-Stopped at: Phase 4 context gathered (reshaped; Phase 5 split out)
-complete (03-UAT.md, 5/5 accepted). Next action: plan Phase 4 — but Phase 4 has
-no CONTEXT.md, so /gsd-discuss-phase 4 is recommended before /gsd-plan-phase 4.
-Note: STATE.md/ROADMAP.md were stale (showed P2 in-progress / P3 not-started);
-refreshed this session.
+Last session: 2026-05-16 (resume)
+Stopped at: Session resumed; pushed 10 pending phase1.5 commits
+(dc4f585..c059f9c) to origin so the networked box can pull. Phase 4 is
+planned + checker-verified (PASS iter 2/3). Next action: /gsd-execute-phase 4.
 
 [older note retained for history]
 Stopped at: Phase 3 context gathered
