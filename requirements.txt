@@ -3,6 +3,7 @@ numpy
 rasterio
 pyproj
 requests
+gcsfs  # GCS-canonical persistence (scripts/gcs_io.py + all build_*_dataset.py pipelines)
 torch
 transformers>=5.8  # 5.x layout: PaliGemma submodules at .model.vision_tower (not .vision_tower)
 peft>=0.10
