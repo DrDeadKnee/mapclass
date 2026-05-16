@@ -25,13 +25,25 @@ I/O idiom copies ``scripts/label.py`` (PIL Image open/crop/save, per-map-dir).
 The crop of an edge pyramid whose footprint runs partly off the source is
 zero-padded by PIL beyond the image extent — acceptable for the <=50%-off
 tiles D-09 keeps; the in-pyramid geometry is exact regardless of clipping.
+
+RW-01: per-pyramid tile writes run under ThreadPoolExecutor(max_workers=32).
+_GCSWriter instances are NOT thread-safe — one instance is created per pyramid
+write task; the underlying gcsfs.GCSFileSystem IS thread-safe.
 """
 
+import io
 import json
-import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image
+
+import sys as _sys
+_HERE = Path(__file__).parent
+if str(_HERE) not in _sys.path:
+    _sys.path.insert(0, str(_HERE))
+
+from gcs_io import _GCSWriter, GCS_PROJECT
 
 # Locked geometry (D-07/D-08).
 PYRAMID_896 = 896
@@ -126,24 +138,88 @@ def _pyramid_id(ox: int, oy: int) -> str:
     return f"py_r{row:03d}_c{col:03d}"
 
 
-def tile(map_dir, out_root=None) -> Path:
+def _write_pyramid(pdir, tiles, img, lc, topo, weights_blob, manifest):
+    """Write one pyramid's tiles + manifest + weights to pdir (_GCSWriter or Path).
+
+    Called from the ThreadPoolExecutor worker. pdir is a fresh per-pyramid
+    _GCSWriter (or Path) — not shared across threads.
+    """
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    for t in tiles:
+        x, y, s = t["x"], t["y"], t["size"]
+        box = (x, y, x + s, y + s)
+
+        buf = io.BytesIO()
+        img.crop(box).save(buf, format="PNG")
+        (pdir / t["image"]).write_bytes(buf.getvalue())
+
+        buf = io.BytesIO()
+        lc.crop(box).save(buf, format="PNG")
+        (pdir / t["land_cover"]).write_bytes(buf.getvalue())
+
+        buf = io.BytesIO()
+        topo.crop(box).save(buf, format="PNG")
+        (pdir / t["topography"]).write_bytes(buf.getvalue())
+
+    (pdir / "pyramid.json").write_text(json.dumps(manifest, indent=2))
+
+    # Per-source loss weights propagate UNCHANGED to every pyramid of the map
+    # (D-claude-discretion; per-source values locked upstream).
+    (pdir / _WEIGHTS_FILE).write_bytes(weights_blob)
+
+    # WR-01: a runtime data-integrity check, NOT an assert — `assert` is
+    # stripped under `python -O` (exactly the production batch-build scenario
+    # where weight-propagation corruption matters).
+    # Integrity check only applicable for local Path (GCS pipe_file is atomic
+    # — no partial-write risk; round-trip read would add unnecessary latency).
+    if isinstance(pdir, Path):
+        if (pdir / _WEIGHTS_FILE).read_bytes() != weights_blob:
+            raise RuntimeError(
+                f"weight propagation corrupted for pyramid {pdir.name}"
+            )
+
+
+def tile(map_dir, out_root=None, max_workers: int = 32):
     """Decompose a completed per-map dir into nested pyramids.
 
     Parameters
     ----------
     map_dir : a directory containing ``image.png`` + ``land_cover.png`` +
               ``topography.png`` + ``sample_weights.json``.
-    out_root : where to write the pyramid tree. Defaults to
-               ``<map_dir>/pyramids`` so the tiler writes INSIDE the source's
-               own subtree — for synthetic this keeps every pyramid on the
-               same side of the frozen train/test split (EVAL-01, T-02-15).
+    out_root : where to write the pyramid tree. Accepts:
+               - None: defaults to ``<map_dir>/pyramids`` (local Path, D-08)
+               - a ``_GCSWriter`` instance: write directly to GCS (RW-01)
+               - a ``str`` starting with ``gs://``: constructs a _GCSWriter
+               - a ``str`` or ``Path`` (local): wraps in Path
+    max_workers : thread pool size for concurrent per-pyramid writes (RW-01b).
 
-    Returns the pyramid-tree root directory. If any required per-map file is
-    missing the map is skipped (logged) and an (empty) root is returned, so a
-    partially-failed map never produces a corrupt pyramid tree (T-02-16).
+    Returns the pyramid-tree root (_GCSWriter or Path). If any required
+    per-map file is missing the map is skipped (logged) and the root is
+    returned empty, so a partially-failed map never produces a corrupt
+    pyramid tree (T-02-16).
     """
     map_dir = Path(map_dir)
-    out = Path(out_root) if out_root is not None else map_dir / "pyramids"
+
+    # Branch on out_root type — RW-01 _GCSWriter support.
+    if isinstance(out_root, _GCSWriter):
+        out = out_root
+    elif isinstance(out_root, str) and out_root.startswith("gs://"):
+        # Lazy-import gcsfs — same pattern as gcs_checkpoint.py lines 36-39.
+        try:
+            import gcsfs  # type: ignore[import]
+        except ModuleNotFoundError:
+            raise ImportError(
+                "gcsfs is required to write pyramids to GCS. "
+                "Install with: pip install gcsfs"
+            )
+        bare = out_root[len("gs://"):]
+        fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+        out = _GCSWriter(fs, bare)
+    elif out_root is not None:
+        out = Path(out_root)
+    else:
+        out = map_dir / "pyramids"
 
     missing = [f for f in _REQUIRED_FILES if not (map_dir / f).exists()]
     if missing:
@@ -155,24 +231,25 @@ def tile(map_dir, out_root=None) -> Path:
     lc = Image.open(map_dir / "land_cover.png")
     topo = Image.open(map_dir / "topography.png")
     width, height = img.size
+    # Pre-load image data into memory before passing to thread pool.
+    # PIL lazily decodes PNG files; concurrent crop() calls on lazily-loaded
+    # images are not thread-safe. load() forces full decode once on the main
+    # thread so workers only call crop() on fully-decoded in-memory data.
+    img.load()
+    lc.load()
+    topo.load()
 
     out.mkdir(parents=True, exist_ok=True)
     weights_blob = (map_dir / _WEIGHTS_FILE).read_bytes()
 
-    n = 0
-    for ox, oy in enumerate_pyramids(width, height):
+    origins = enumerate_pyramids(width, height)
+
+    # Build list of (pdir, tiles, manifest) for all pyramids.
+    pyramid_tasks = []
+    for ox, oy in origins:
         pid = _pyramid_id(ox, oy)
         pdir = out / pid
-        pdir.mkdir(parents=True, exist_ok=True)
-
         tiles = _pyramid_tiles(ox, oy)
-        for t in tiles:
-            x, y, s = t["x"], t["y"], t["size"]
-            box = (x, y, x + s, y + s)
-            img.crop(box).save(pdir / t["image"])
-            lc.crop(box).save(pdir / t["land_cover"])
-            topo.crop(box).save(pdir / t["topography"])
-
         manifest = {
             "pyramid_id": pid,
             "origin": [ox, oy],
@@ -182,20 +259,22 @@ def tile(map_dir, out_root=None) -> Path:
             "stride": PYRAMID_STRIDE,
             "tiles": tiles,
         }
-        (pdir / "pyramid.json").write_text(json.dumps(manifest, indent=2))
+        pyramid_tasks.append((pdir, tiles, manifest))
 
-        # Per-source loss weights propagate UNCHANGED to every pyramid of the
-        # map (D-claude-discretion; per-source values locked upstream).
-        shutil.copyfile(map_dir / _WEIGHTS_FILE, pdir / _WEIGHTS_FILE)
-        # WR-01: a runtime data-integrity check, NOT an assert — `assert`
-        # is stripped under `python -O` (exactly the production batch-build
-        # scenario where weight-propagation corruption matters).
-        if (pdir / _WEIGHTS_FILE).read_bytes() != weights_blob:
-            raise RuntimeError(
-                f"weight propagation corrupted for pyramid {pdir.name}"
-            )
-        n += 1
+    # RW-01b: 32-thread write pool — mirror build_historical_dataset.py L138-144.
+    # Each pyramid gets its own pdir (_GCSWriter or Path) — not shared across
+    # threads (_GCSWriter instances are not thread-safe; gcsfs.GCSFileSystem is).
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_write_pyramid, pdir, tiles, img, lc, topo,
+                        weights_blob, manifest): pid
+            for pdir, tiles, manifest in pyramid_tasks
+            for pid in [manifest["pyramid_id"]]
+        }
+        for fut in as_completed(futures):
+            fut.result()  # re-raises any exception from the worker
 
+    n = len(pyramid_tasks)
     print(f"  tiled {map_dir.name}: {n} pyramid(s) "
           f"({width}x{height}px, {n * 21} tiles)")
     return out
