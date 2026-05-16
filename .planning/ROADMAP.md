@@ -24,7 +24,8 @@ result to HuggingFace as the project's deliverable.
 - [x] **Phase 1: Fine-tune PaliGemma-3B on illustrated map terrain symbols** - LoRA-adapt the SigLIP vision encoder to ~120 hex terrain tiles (9 land cover + 3 topography classes) augmented to ~4,760 samples; Gemma frozen
 - [x] **Phase 2: Build a dataset of pixel-label pairs** - Produce labelled training data from historical illustrated maps, synthetic illustrated maps (Azgaar + Pillow), and satellite imagery (ESA WorldCover + Copernicus DEM)
 - [x] **Phase 3: Build a dense semantic segmentation pipeline** - Construct the dense segmentation model on the Phase-1 SigLIP encoder with two lightweight heads and coarse-to-fine inference; benchmark DINOv2 and Swin
-- [ ] **Phase 4: Fine-tune, evaluate, and upload the segmentation model** - Train end-to-end on the Phase-2 dataset, evaluate on held-out synthetic maps with joint per-pixel NLL, publish to HuggingFace
+- [ ] **Phase 4: Fine-tune and evaluate the segmentation model** - Train the A/B × SigLIP/DINOv2/Swin matrix end-to-end on the Phase-2 dataset (cost-probe-gated breadth), evaluate on held-out synthetic maps with joint per-pixel NLL, produce a comparison report — stops at numbers + checkpoints + report
+- [ ] **Phase 5: Explore, select, and publish the segmentation model** - Hands-on exploration of the trained models/dataset, select the deliverable, publish to HuggingFace with a model card (inference instructions + joint-NLL)
 
 ## Phase Details
 
@@ -123,23 +124,45 @@ Plans:
 - [x] 03-05-PLAN.md — SegModel assembly (both D-03a variants) + recursive c2f orchestrator + smoke (D-03/D-04)
 **Status**: complete (UAT accepted-on-evidence 2026-05-16, 5/5 passed — see 03-UAT.md)
 
-### Phase 4: Fine-tune and evaluate the segmentation model, then upload to HuggingFace
+### Phase 4: Fine-tune and evaluate the segmentation model
 **Goal**: Fine-tune the Phase-3 segmentation model end-to-end on the Phase-2
-dataset (applying class-conditional loss weights for historical samples),
+dataset (applying class-conditional loss weights for historical samples) and
 evaluate on the held-out synthetic test set using joint per-pixel NLL =
--(log p_land_cover + log p_topography), and publish the final fine-tuned model
-to HuggingFace as the project's deliverable.
+-(log p_land_cover + log p_topography). Train the A/B × SigLIP/DINOv2/Swin
+matrix with cost-probe-gated breadth, produce trained checkpoints + a written
+comparison report. Stops before deliverable selection / publication (Phase 5).
+**Reshaped 2026-05-16** (user decision, see 04-CONTEXT.md `<domain>`):
+publication split out to a new Phase 5 so the user can hands-on test the
+trained models/dataset before delivering.
 **Depends on**: Phase 3
-**Requirements**: PHASE-04, EVAL-02, DELIV-01, DELIV-02
+**Requirements**: EVAL-02 (computation only), EVAL-03
 **Success Criteria** (what must be TRUE):
   1. The model is fine-tuned end-to-end on the Phase-2 dataset, honouring the
      per-sample `sample_weights.json` weights for historical maps
   2. Joint per-pixel NLL is computed on the held-out synthetic test set
      (averaged over pixels) and reported as the headline metric, with primary
      SigLIP and benchmark DINOv2 / Swin numbers side by side
-  3. The final fine-tuned model is uploaded to HuggingFace as a public artifact,
-     with minimum inference instructions and pointers to the evaluation metric
-  4. Loading the published model and running it on a fresh regional map image
+  3. Trained checkpoints persist to `gs://mapclass-training-northeast1/models/`
+     (per-config); a git-committed manifest of URIs + joint-NLL metrics JSON +
+     a written A/B × backbone comparison report are produced
+  4. A cost-probe (SigLIP Variant B) precedes the full grid; a manual
+     checkpoint:decision gate sets grid breadth from measured GPU cost
+**Plans**: TBD
+**Status**: not_started
+
+### Phase 5: Explore, select, and publish the segmentation model
+**Goal**: Hands-on exploration of the Phase-4 trained models and the dataset by
+the researcher, selection of the deliverable model, and publication to
+HuggingFace as a public artifact with a model card (minimum inference
+instructions + joint per-pixel NLL, optional DINOv2/Swin benchmark numbers).
+**Depends on**: Phase 4
+**Requirements**: PHASE-04, DELIV-01, DELIV-02, EVAL-02 (reported-with-published-model clause)
+**Success Criteria** (what must be TRUE):
+  1. The user has hands-on-explored the Phase-4 checkpoints/dataset and selected
+     the deliverable model against a recorded criterion
+  2. The selected model is uploaded to HuggingFace as a public artifact, with
+     minimum inference instructions and pointers to the joint-NLL evaluation
+  3. Loading the published model and running it on a fresh regional map image
      yields a dense pixel-level land-cover + topography prediction
 **Plans**: TBD
 **Status**: not_started
@@ -147,11 +170,12 @@ to HuggingFace as the project's deliverable.
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
 | 2. Build a dataset of pixel-label pairs | 5/5 | Complete | 2026-05-16 |
 | 3. Build a dense semantic segmentation pipeline | 5/5 | Complete | 2026-05-16 |
-| 4. Fine-tune, evaluate, and upload the segmentation model | 0/TBD | Not started | - |
+| 4. Fine-tune and evaluate the segmentation model | 0/TBD | Not started | - |
+| 5. Explore, select, and publish the segmentation model | 0/TBD | Not started | - |
