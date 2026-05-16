@@ -9,8 +9,10 @@ import pytest
 from historical import iiif
 
 # A David Rumsey IIIF image service known to resolve (IIIF Image API 2.x).
+# Verified live 2026-05-16 (11651x14997 source). The prior fixture
+# (RUMSEY~8~1~24694~890095) was retired upstream by David Rumsey.
 _KNOWN_IMAGE_SERVICE = (
-    "https://www.davidrumsey.com/luna/servlet/iiif/RUMSEY~8~1~24694~890095"
+    "https://www.davidrumsey.com/luna/servlet/iiif/RUMSEY~8~1~292315~90066993"
 )
 
 

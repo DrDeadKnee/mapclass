@@ -9,8 +9,10 @@ import pytest
 from historical import allmaps
 
 # A David Rumsey manifest known to be georeferenced in Allmaps.
+# Verified live 2026-05-16 (19 GCPs). The prior fixture
+# (RUMSEY~8~1~24694~890095) was retired upstream by David Rumsey.
 _KNOWN_RUMSEY_MANIFEST = (
-    "https://www.davidrumsey.com/luna/servlet/iiif/m/RUMSEY~8~1~24694~890095/manifest"
+    "https://www.davidrumsey.com/luna/servlet/iiif/m/RUMSEY~8~1~292315~90066993/manifest"
 )
 
 
