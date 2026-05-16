@@ -103,31 +103,39 @@ def load_test_pyramid_dirs(split_json: Path, data_root: Path) -> List[Path]:
     split = json.loads(split_json.read_text())
     test_ids: List[str] = split["test"]
     data_root_resolved = data_root.resolve()
+    test_root_resolved = (data_root / "test").resolve()
 
     dirs: List[Path] = []
     for map_id in test_ids:
         # Construct candidate path — always under test/, never train/
         candidate = (data_root / "test" / map_id).resolve()
 
-        # T-04-07: assert data_root is an ancestor of the resolved path.
-        # Use strict parent-of check (not just startswith, which can be fooled
-        # by a sibling directory whose name starts with the same prefix).
-        if data_root_resolved not in candidate.parents and candidate != data_root_resolved:
+        # T-04-07: assert the resolved path is strictly under data_root/test/.
+        # Checking only data_root would allow map IDs like "../train/secret"
+        # (which traverse from test/ into train/ but remain under data_root).
+        # Checking test_root ensures no map ID can escape the test/ subtree.
+        if test_root_resolved not in candidate.parents and candidate != test_root_resolved:
             raise ValueError(
                 f"Map ID {map_id!r} resolves to {candidate} which is outside "
-                f"data_root {data_root_resolved} — path traversal rejected (T-04-07)."
+                f"data_root/test/ ({test_root_resolved}) — path traversal rejected (T-04-07)."
             )
 
         if not candidate.exists():
             continue
 
-        # Collect all pyramid subdirectories (each containing pyramid.json)
+        # Collect all pyramid subdirectories (each containing pyramid.json).
+        # The tiling producer creates pyramids at <map_id>/pyramids/<py_r*/c*>/,
+        # so we recursively search for any subdirectory containing pyramid.json
+        # rather than assuming a fixed nesting depth.
         if candidate.is_dir():
-            pyramid_dirs = sorted(
-                p for p in candidate.iterdir()
-                if p.is_dir() and (p / "pyramid.json").exists()
-            )
-            dirs.extend(pyramid_dirs)
+            for pjson in sorted(candidate.rglob("pyramid.json")):
+                if not pjson.is_file():
+                    continue
+                pdir = pjson.parent.resolve()
+                # Re-apply traversal guard for each discovered pyramid dir:
+                # it must be under data_root/test/ (not merely data_root).
+                if test_root_resolved in pdir.parents or pdir == test_root_resolved:
+                    dirs.append(pdir)
 
     return dirs
 
@@ -212,13 +220,20 @@ def evaluate_joint_nll(
                 log_lc = torch.log(lc_prob.clamp_min(1e-12))     # (1, 9, S, S)
                 log_topo = torch.log(topo_prob.clamp_min(1e-12))  # (1, 3, S, S)
 
-                # Gather log p at the true class — result is (S, S)
-                lc_nll = -log_lc[0].gather(0, lc_gt.unsqueeze(0)).squeeze(0)
-                topo_nll = -log_topo[0].gather(0, topo_gt.unsqueeze(0)).squeeze(0)
-                joint_nll = lc_nll + topo_nll  # (S, S)
-
                 # Valid mask: exclude out-of-range labels (T-04-09 intent)
                 valid = (lc_gt < 9) & (topo_gt < 3)
+
+                # Gather log p at the true class — result is (S, S).
+                # Clamp gather indices to valid range BEFORE gather so that
+                # out-of-range label values (e.g. 9 for LC, 3 for topo) do not
+                # cause an index-out-of-bounds RuntimeError.  Their contribution
+                # is masked out via the `valid` mask and never added to the sum.
+                lc_gt_safe = lc_gt.clamp(0, 8)    # [0, num_lc_classes - 1]
+                topo_gt_safe = topo_gt.clamp(0, 2)  # [0, num_topo_classes - 1]
+                lc_nll = -log_lc[0].gather(0, lc_gt_safe.unsqueeze(0)).squeeze(0)
+                topo_nll = -log_topo[0].gather(0, topo_gt_safe.unsqueeze(0)).squeeze(0)
+                joint_nll = lc_nll + topo_nll  # (S, S)
+
                 total_nll += joint_nll[valid].sum().item()
                 total_pixels += valid.sum().item()
 
