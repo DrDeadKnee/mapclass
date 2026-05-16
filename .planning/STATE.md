@@ -28,8 +28,8 @@ comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — CONTEXT GATHERED
-Plan: not yet planned (04-CONTEXT.md written, ready for /gsd-plan-phase 4)
+Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — PLANNED
+Plan: 5 plans / 4 waves written + checker-verified (PASS iter 2/3); ready for /gsd-execute-phase 4
 Status: Ready to execute
 new Phase 5 owns deliverable selection + HuggingFace publish (user decision
 2026-05-16, see 04-CONTEXT.md `<domain>`). Roadmap updated to 5 phases.
