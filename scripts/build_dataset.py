@@ -75,7 +75,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import tiling
-from gcs_io import _GCSWriter, validate_manifest, GCS_PROJECT, DATA_PREFIX
+from gcs_io import _GCSWriter, validate_manifest, GCS_PROJECT, DATA_PREFIX, mark_build_complete, is_build_complete
 from label import make_label_arrays
 from render import render_one
 from synthetic_weights import write_sample_weights
@@ -278,8 +278,17 @@ def build_one_source(
             gcs_map_prefix = (
                 f"{out_gcs_prefix}/{split_name}/{src_id}{_STYLE_SEP}{style}"
             )
+            # OQ1: skip only if _BUILD_COMPLETE sentinel is present (Pitfall R-2).
+            # A prefix whose objects exist but whose sentinel is absent is a
+            # partial/aborted build — rebuild it from scratch.
+            if is_build_complete(fs, gcs_map_prefix):
+                print(f"  SKIP (complete) {split_name}/{out.name}")
+                created.append(out)
+                continue
             gcs_pyr_writer = _GCSWriter(fs, f"{gcs_map_prefix}/pyramids")
             tiling.tile(out, out_root=gcs_pyr_writer)
+            # OQ1: write sentinel LAST after all pyramid objects are written (T-02-40).
+            mark_build_complete(fs, gcs_map_prefix)
 
         created.append(out)
         print(f"  built {split_name}/{out.name}  ({lc_img.width}x{lc_img.height}px)")

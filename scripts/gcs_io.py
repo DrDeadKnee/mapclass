@@ -3,7 +3,7 @@ GCS I/O abstraction for the MapClass Phase-2 dataset pipeline.
 
 Provides a single, tested GCS I/O surface shared by every Phase-2 build script
 (build_dataset.py, build_historical_dataset.py, build_satellite_dataset.py,
-tiling.py) and the Phase-5 finetune/evaluate pull-once helpers.
+tiling.py) and the Phase-4 finetune/evaluate pull-once helpers.
 
 Design notes
 ------------
@@ -14,6 +14,31 @@ Design notes
 - validate_manifest is the ONLY gate before split.json is frozen (RW-02).  It
   calls sys.exit(1) on any mismatch — never warns or raises ValueError.
 - pull_dataset_from_gcs + verify_pull implement the RW-03 pull-once pattern.
+
+GCS Layout Decision (OQ2, LOCKED 2026-05-16, 02-05):
+-----------------------------------------------------
+Family-rooted GCS layout — each build script owns its family prefix:
+  gs://.../data/synthetic/{train,test}/<map_id>/
+  gs://.../data/historical/dataset/<map_id>/
+  gs://.../data/satellite/dataset/<map_id>/
+
+At pull-once time (RW-03), finetune_seg pulls ALL three families into a
+MERGED local scratch root so carve_train_val / load_test_pyramid_dirs see
+a flat tree.  evaluate_seg pulls ONLY the synthetic test subset because
+EVAL-01 hold-out is synthetic-only (split.json stays at
+gs://.../data/synthetic/split.json and is never relocated).
+
+Rationale: each build script is decoupled; merging happens only at pull time;
+no cross-family path contamination; historical/satellite pyramids add to train
+without polluting the EVAL-01 split logic.
+
+_BUILD_COMPLETE sentinel (OQ1, LOCKED 2026-05-16, 02-05):
+----------------------------------------------------------
+After all pyramid objects for a map-dir are written, a zero-byte sentinel
+``_BUILD_COMPLETE`` is written as the LAST write.  The skip guard in every
+build script checks ``is_build_complete()`` — a prefix whose objects exist
+but whose sentinel is absent is treated as a partial/aborted build and
+rebuilt from scratch (Pitfall R-2: preemption leaves partial dirs).
 
 Trust boundary: user-authored manifest.json filenames/templates cross a trust
 boundary here.  The _FILENAME_RE fullmatch + 4-way cross-check in
@@ -51,6 +76,72 @@ except ModuleNotFoundError:
 GCS_PROJECT = "narrative-campaign"
 BUCKET = "mapclass-training-northeast1"
 DATA_PREFIX = "mapclass-training-northeast1/data"
+
+# ---------------------------------------------------------------------------
+# _BUILD_COMPLETE sentinel (OQ1)
+# ---------------------------------------------------------------------------
+
+#: Sentinel filename written as the LAST object after a map-dir build succeeds.
+#: The skip guard checks is_build_complete() — a dir without this sentinel is
+#: rebuilt from scratch (Pitfall R-2 / T-02-40 mitigation).
+_BUILD_COMPLETE = "_BUILD_COMPLETE"
+
+
+def mark_build_complete(fs: "Any", map_dir_prefix: str) -> None:
+    """Write the _BUILD_COMPLETE sentinel as the LAST step of a map-dir build.
+
+    Must be called AFTER ``tiling.tile(...)`` completes and ALL pyramid objects
+    have been written.  The sentinel presence is the only reliable indicator
+    that the build for ``map_dir_prefix`` finished without preemption (Pitfall
+    R-2 / T-02-40).
+
+    Args:
+        fs:             fsspec-compatible filesystem (gcsfs.GCSFileSystem or
+                        fsspec.filesystem("file") for tests).
+        map_dir_prefix: bare GCS prefix of the map directory, e.g.
+                        ``"mapclass-training-northeast1/data/synthetic/train/europe_01__flat"``.
+    """
+    fs.pipe_file(f"{map_dir_prefix}/{_BUILD_COMPLETE}", b"1")
+
+
+def is_build_complete(fs: "Any", map_dir_prefix: str) -> bool:
+    """Return True iff the _BUILD_COMPLETE sentinel exists for ``map_dir_prefix``.
+
+    A map-dir prefix whose objects exist but whose sentinel is absent is
+    treated as a partial/aborted build and must be rebuilt from scratch
+    (Pitfall R-2 / T-02-40).
+
+    Args:
+        fs:             fsspec-compatible filesystem.
+        map_dir_prefix: bare GCS prefix of the map directory.
+
+    Returns:
+        True if the sentinel object exists; False otherwise.
+    """
+    return bool(fs.exists(f"{map_dir_prefix}/{_BUILD_COMPLETE}"))
+
+
+# ---------------------------------------------------------------------------
+# family_subset_prefix (OQ2 — family-rooted GCS layout)
+# ---------------------------------------------------------------------------
+
+def family_subset_prefix(family: str, subset: str) -> str:
+    """Return the canonical bare GCS prefix for a (family, subset) pair.
+
+    Encodes the OQ2 family-rooted layout decision (LOCKED 2026-05-16, 02-05):
+    each build script writes into its own family subdirectory; pull-once merges
+    them into a flat local scratch root.
+
+    Args:
+        family: one of ``"synthetic"``, ``"historical"``, ``"satellite"``.
+        subset: e.g. ``"train"``, ``"test"``, ``"dataset"``.
+
+    Returns:
+        Bare GCS prefix string (no ``gs://`` scheme), e.g.
+        ``"mapclass-training-northeast1/data/synthetic/train"``.
+    """
+    return f"{DATA_PREFIX}/{family}/{subset}"
+
 
 # ---------------------------------------------------------------------------
 # _FILENAME_RE — RW-02 filename convention

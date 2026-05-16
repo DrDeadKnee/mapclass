@@ -47,7 +47,7 @@ except ModuleNotFoundError:
     gcsfs = None  # type: ignore[assignment]
 
 import tiling
-from gcs_io import _GCSWriter, GCS_PROJECT, DATA_PREFIX
+from gcs_io import _GCSWriter, GCS_PROJECT, DATA_PREFIX, mark_build_complete, is_build_complete
 from historical import label as hist_label
 from historical import rumsey
 
@@ -168,8 +168,15 @@ def _process_one(
             if gcs_out_prefix is not None and fs is not None:
                 # RW-04: stream pyramids to GCS. Each _GCSWriter is per-pyramid
                 # (not shared) — thread safety relies on shared gcsfs.GCSFileSystem.
-                gcs_prefix = f"{gcs_out_prefix}/{sample_name}/pyramids"
+                gcs_map_prefix = f"{gcs_out_prefix}/{sample_name}"
+                # OQ1: skip only if _BUILD_COMPLETE sentinel is present (Pitfall R-2).
+                if is_build_complete(fs, gcs_map_prefix):
+                    print(f"  SKIP (complete) {sample_name}")
+                    return tif, None
+                gcs_prefix = f"{gcs_map_prefix}/pyramids"
                 tiling.tile(sample_dir, out_root=_GCSWriter(fs, gcs_prefix))
+                # OQ1: write sentinel LAST after all pyramid objects (T-02-40).
+                mark_build_complete(fs, gcs_map_prefix)
             else:
                 tiling.tile(sample_dir)
         return tif, None

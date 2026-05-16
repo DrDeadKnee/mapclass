@@ -47,7 +47,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import tiling
-from gcs_io import _GCSWriter, GCS_PROJECT, DATA_PREFIX
+from gcs_io import _GCSWriter, GCS_PROJECT, DATA_PREFIX, mark_build_complete, is_build_complete
 from historical import label as hist_label
 from satellite import coverage, fetch, stac
 from satellite import weights as sat_weights
@@ -308,8 +308,15 @@ def _process_one(scene: dict, out_dir, fs=None) -> tuple[str, str]:
                     # Per-pyramid _GCSWriter — NOT shared across threads
                     # (_GCSWriter instances are not thread-safe; the shared fs IS).
                     gcs_prefix = _bare(out_dir_str)
-                    out_root = _GCSWriter(fs, f"{gcs_prefix}/{safe}/pyramids")
+                    gcs_map_prefix = f"{gcs_prefix}/{safe}"
+                    # OQ1: skip only if _BUILD_COMPLETE sentinel is present (Pitfall R-2).
+                    if is_build_complete(fs, gcs_map_prefix):
+                        print(f"  SKIP (complete) {safe}")
+                        return rid, "ok"
+                    out_root = _GCSWriter(fs, f"{gcs_map_prefix}/pyramids")
                     tiling.tile(sample_dir, out_root=out_root)
+                    # OQ1: write sentinel LAST after all pyramid objects (T-02-40).
+                    mark_build_complete(fs, gcs_map_prefix)
                 else:
                     local_out = Path(out_dir) / safe
                     local_out.mkdir(parents=True, exist_ok=True)
