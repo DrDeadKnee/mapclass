@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-05-15T22:49:36.323Z"
-last_activity: 2026-05-15 -- Phase 03 execution started
+status: ready_to_plan
+stopped_at: Phase 2 online gate closed (6/6); Phase 3 complete (UAT 5/5); Phase 4 next
+last_updated: "2026-05-16T00:00:00Z"
+last_activity: 2026-05-16 -- Phase 02 online integration gate passed 6/6 (stale Rumsey fixtures fixed, dc4f585)
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 10
-  completed_plans: 5
-  percent: 50
+  completed_phases: 3
+  total_plans: 11
+  completed_plans: 11
+  percent: 75
 ---
 
 # Project State
@@ -23,18 +23,20 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 **Core value:** A trained segmentation model on HuggingFace producing dense per-pixel
 land-cover and topography predictions on illustrated regional maps, evaluated by
 joint per-pixel NLL on held-out synthetic maps.
-**Current focus:** Phase 03 — build-a-dense-semantic-segmentation-pipeline
+**Current focus:** Phase 04 — fine-tune, evaluate (joint NLL), upload to HuggingFace
 
 ## Current Position
 
-Phase: 03 (build-a-dense-semantic-segmentation-pipeline) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 03
-Last activity: 2026-05-15 -- Phase 03 execution started
-working branch `phase1.5`; working tree clean — all Phase 2 planning artifacts
-committed (HEAD `9ddd6ab`). Allmaps integration already tracked as of `1e43917`.
+Phase: 03 (build-a-dense-semantic-segmentation-pipeline) — COMPLETE
+Plan: 5 of 5 complete
+Status: Phases 1–3 complete; Phase 4 not yet planned (no 04 dir / CONTEXT.md)
+Last activity: 2026-05-16 -- Phase 02 online integration gate passed 6/6
+working branch `phase1.5`; Phase 3 fully executed + UAT accepted-on-evidence
+(03-UAT.md, 5/5). Phase 2 online integration gate now 6/6 — stale David Rumsey
+test fixtures (RUMSEY~8~1~24694~890095, retired upstream) repointed to
+RUMSEY~8~1~292315~90066993 in commit `dc4f585` (pushed to origin/phase1.5).
 
-Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
+Progress: [███████░░░] 75% (Phases 1–3 of 4 complete)
 
 ## Performance Metrics
 
@@ -100,7 +102,14 @@ Items acknowledged and carried forward:
 
 ## Session Continuity
 
-Last session: 2026-05-15T20:28:15.462Z
+Last session: 2026-05-16T00:00:00Z
+Stopped at: Phase 2 online gate closed (6/6, 02-HUMAN-UAT.md complete); Phase 3
+complete (03-UAT.md, 5/5 accepted). Next action: plan Phase 4 — but Phase 4 has
+no CONTEXT.md, so /gsd-discuss-phase 4 is recommended before /gsd-plan-phase 4.
+Note: STATE.md/ROADMAP.md were stale (showed P2 in-progress / P3 not-started);
+refreshed this session.
+
+[older note retained for history]
 Stopped at: Phase 3 context gathered
 iteration), all coverage gates green, committed at `9ddd6ab`. Next action:
 `/gsd-execute-phase 2`. Working tree clean; nothing to recover.

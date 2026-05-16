@@ -22,8 +22,8 @@ result to HuggingFace as the project's deliverable.
 - Decimal phases (e.g., 2.1): urgent insertions (none yet)
 
 - [x] **Phase 1: Fine-tune PaliGemma-3B on illustrated map terrain symbols** - LoRA-adapt the SigLIP vision encoder to ~120 hex terrain tiles (9 land cover + 3 topography classes) augmented to ~4,760 samples; Gemma frozen
-- [ ] **Phase 2: Build a dataset of pixel-label pairs** - Produce labelled training data from historical illustrated maps, synthetic illustrated maps (Azgaar + Pillow), and satellite imagery (ESA WorldCover + Copernicus DEM)
-- [ ] **Phase 3: Build a dense semantic segmentation pipeline** - Construct the dense segmentation model on the Phase-1 SigLIP encoder with two lightweight heads and coarse-to-fine inference; benchmark DINOv2 and Swin
+- [x] **Phase 2: Build a dataset of pixel-label pairs** - Produce labelled training data from historical illustrated maps, synthetic illustrated maps (Azgaar + Pillow), and satellite imagery (ESA WorldCover + Copernicus DEM)
+- [x] **Phase 3: Build a dense semantic segmentation pipeline** - Construct the dense segmentation model on the Phase-1 SigLIP encoder with two lightweight heads and coarse-to-fine inference; benchmark DINOv2 and Swin
 - [ ] **Phase 4: Fine-tune, evaluate, and upload the segmentation model** - Train end-to-end on the Phase-2 dataset, evaluate on held-out synthetic maps with joint per-pixel NLL, publish to HuggingFace
 
 ## Phase Details
@@ -90,7 +90,7 @@ Plans:
 - [x] 02-03-PLAN.md — Synthetic pipeline: per-(source×style) output, weights, frozen stratified split (D-15..D-18, EVAL-01)
 - [x] 02-04-PLAN.md — Satellite pipeline: coverage scan + STAC + COG fetch (D-10..D-14)
 - [x] 02-05-PLAN.md — Shared nested-pyramid tiler + integration into all 3 builds (D-06..D-09)
-**Status**: in_progress
+**Status**: complete (offline verification 5/5; online integration gate 6/6 passed 2026-05-16, see 02-HUMAN-UAT.md)
 
 ### Phase 3: Build a dense semantic segmentation pipeline
 **Goal**: Construct a dense pixel-level segmentation model using the Phase-1
@@ -120,8 +120,8 @@ Plans:
 - [x] 03-02-PLAN.md — Backbone protocol + SigLIP/DINOv2/Swin + Variant-B widened 15-ch patch-embed (D-05/D-03a)
 - [x] 03-03-PLAN.md — PyramidDataset over Phase-2 tree, train/-only, weights surfaced unchanged (D-06)
 - [x] 03-04-PLAN.md — Shared UPerNet PPM+FPN conv decoder + two thin task heads (D-01/D-02)
-- [ ] 03-05-PLAN.md — SegModel assembly (both D-03a variants) + recursive c2f orchestrator + smoke (D-03/D-04)
-**Status**: not_started
+- [x] 03-05-PLAN.md — SegModel assembly (both D-03a variants) + recursive c2f orchestrator + smoke (D-03/D-04)
+**Status**: complete (UAT accepted-on-evidence 2026-05-16, 5/5 passed — see 03-UAT.md)
 
 ### Phase 4: Fine-tune and evaluate the segmentation model, then upload to HuggingFace
 **Goal**: Fine-tune the Phase-3 segmentation model end-to-end on the Phase-2
@@ -152,6 +152,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
-| 2. Build a dataset of pixel-label pairs | 0/5 | In progress | - |
-| 3. Build a dense semantic segmentation pipeline | 0/5 | Not started | - |
+| 2. Build a dataset of pixel-label pairs | 5/5 | Complete | 2026-05-16 |
+| 3. Build a dense semantic segmentation pipeline | 5/5 | Complete | 2026-05-16 |
 | 4. Fine-tune, evaluate, and upload the segmentation model | 0/TBD | Not started | - |
