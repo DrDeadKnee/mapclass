@@ -1,72 +1,72 @@
-# Phase 2: Build a dataset of pixel-label pairs - Research
+# Phase 02: Build a Dataset of Pixel-Label Pairs — Research (REWORK)
 
-**Researched:** 2026-05-15
-**Domain:** Geospatial ML data pipelines — IIIF + Allmaps georeferencing, STAC + Sentinel-2 satellite, Pillow-rendered synthetic, multi-scale tiled output
-**Confidence:** HIGH on Allmaps + Sentinel-2 + IIIF + rasterio paths (verified live);
-MEDIUM on Azgaar template-name extraction (no exposed schema field — needs file inspection);
-LOW on multi-scale pyramid storage convention (no canonical pattern in the ecosystem — Claude's discretion).
+**Researched:** 2026-05-16 (REWORK — supersedes 2026-05-15 pre-rework file)
+**Domain:** GCS-canonical dataset persistence via gcsfs/fsspec; Azgaar raw-input naming contract
+**Confidence:** HIGH on gcsfs/fsspec API (verified live 2026.5.0/2026.3.0); HIGH on tiling.py
+touch-point inventory (code read); HIGH on cost/throughput estimates; MEDIUM on GCS write
+latency (based on documented typical ranges, not a live timing run on this box)
+
+> **REWORK SCOPE.** This file supersedes the 2026-05-15 research for the persistence/storage
+> sections (RW-01 through RW-04 and GCS-related pitfalls). All unchanged-domain findings
+> (Allmaps, IIIF, STAC, Sentinel-2, taxonomy, loss weights, D-15/D-16 split algorithm,
+> tiler geometry) are cited from the prior research rather than re-researched. The planner
+> MUST read this file in full; the 2026-05-15 research is now a secondary reference only.
 
 <user_constraints>
-## User Constraints (from CONTEXT.md)
+## User Constraints (from CONTEXT.md — REWORK 2026-05-16)
 
 ### Locked Decisions
 
-#### Allmaps wiring (historical pipeline)
+#### GCS write strategy (RW-01)
+- **RW-01: Direct gcsfs streaming.** `build_dataset.py`, `build_historical_dataset.py`,
+  `build_satellite_dataset.py`, and `tiling.py` write outputs **directly to
+  `gs://mapclass-training-northeast1/data/` via gcsfs/fsspec** — no canonical local copy.
+  `split.json` is written directly to GCS at split-compute time. The invasiveness of the
+  tiling.py refactor and the small-object write cost are understood by the user; DO NOT
+  re-litigate, but document cost and mitigation honestly.
 
-- **D-01: Delete WMS code path entirely.** LUNA never exposes WMS URLs or bounding boxes — the old `_wms_url`, `_parse_bbox`, `_download_wms_geotiff` functions are dead code. Remove them. The historical pipeline flows LUNA → Allmaps → IIIF image → GeoTIFF only.
-- **D-02: Fixed 4096 max-edge IIIF fetch.** Request `/full/!4096,4096/0/default.jpg`. Scale the Allmaps GCPs (which are in original IIIF pixel coords) by the same factor before writing the GeoTIFF.
-- **D-03: Affine least-squares fit over all Allmaps GCPs.** Solve a 6-parameter affine; write as the GeoTIFF's `transform` via `rasterio`. No TPS pre-warp at this stage. `historical/label.py` works directly off `ds.crs` + `ds.transform` and needs no resampling layer.
-- **D-04: Failure handling — drop out-of-scale silently, manifest the rest.** Maps whose GCP-derived bbox diagonal falls outside [100, 2000] km are dropped without entering the manifest. Maps with `not_in_allmaps` (404) or `gcps_insufficient` (<3 GCPs) are emitted to `unregistered_manifest.json` with a `status` field distinguishing reason.
-- **D-05: Surface per-reason drop counts at end of `cmd_search`.** Print drop counts for `out_of_scale`, `not_in_allmaps`, `gcps_insufficient`, `download_failed`. A high `out_of_scale` rate (e.g. >50% of search results) is a signal to revisit the scale window — Phase 2 is not "done" if the cleanup is hiding most of the dataset.
+#### Raw-input naming contract (RW-02)
+- **RW-02:** Hand-created Azgaar exports are named `<template>_<NN>.geojson` (lowercase,
+  zero-padded `NN`, e.g. `europe_01.geojson`). Uploaded to
+  `gs://mapclass-training-northeast1/data/synthetic/raw/`. A user-authored `raw/manifest.json`
+  maps every filename → continent template. `build_dataset.py` **validates filenames against
+  the manifest and HARD-FAILS before computing or freezing the split.**
 
-#### Sample yield (all three source families)
+#### Train/eval data access (RW-03)
+- **RW-03: Pull-once to local cache, verify, then train.** At job start, `finetune_seg.py` /
+  `evaluate_seg.py` bulk-fetch the needed split subset from GCS to local scratch, verify
+  against `split.json` (membership + presence; cheap spot-check), then train/eval from local
+  disk. Consistent with the existing `seg/gcs_checkpoint.py` preemption-safety design.
 
-- **D-06: Pre-tile at build time, with overlap.** Tiles are materialised on disk during `build_*_dataset.py`. The training DataLoader reads by index, not by random crop.
-- **D-07: Multi-scale nested pyramids.** Each pyramid contains 1×(896×896) + 4×(448×448) + 16×(224×224) tiles in strict 2×2 spatial nesting. A given 896 region's prediction maps directly to its 4 inner 448 predictions and 16 inner 224 predictions — exploitable by Phase 3's coarse-to-fine model.
-- **D-08: Pyramid-to-pyramid stride 448 (50% top-scale overlap).** Within a pyramid, siblings at the same scale do **not** overlap. Across pyramids, the 896 footprints step by 448 across the source map. A 4096-px map yields ~64 pyramids × 21 tiles = ~1344 sample tiles.
-- **D-09: Edge policy.** Drop pyramids whose 896 footprint falls more than 50% off the source map.
+#### Scope — source families (RW-04)
+- **RW-04: ALL THREE families are GCS-canonical.** Synthetic (rebuilt from scratch),
+  historical, and satellite. Each build script persists raw inputs (where applicable), built
+  `train/`+`test/` outputs, and manifests to
+  `gs://mapclass-training-northeast1/data/{synthetic,historical,satellite}/`.
+  Local disk is scratch only.
 
-#### Satellite-source RGB imagery
+#### Reversed project decisions (planner MUST update PROJECT.md)
+- **D-06** reversed: tiles persist to GCS via streaming, not canonical-on-disk.
+- **D-17** reversed: `gs://…/data/synthetic/{train,test}/` + `split.json` are canonical;
+  filesystem separation is a transient local-scratch detail during RW-03 pull-once.
+- **D-18** reversed: `split.json` now at `gs://…/data/synthetic/split.json`; prior frozen
+  split is GONE. New split freezes on the regenerated Azgaar sources.
 
-- **D-10: Satellite is a true third training source (image→label pairs).** The satellite stream is *not* label-only adjacency priors — the model is trained on Sentinel-2 RGB tiles paired with WorldCover labels alongside historical and synthetic samples. Cross-domain generalisation back to illustrated is part of the bet.
-- **D-11: Sentinel-2 L2A RGB from `s3://sentinel-cogs`.** Anonymous S3, STAC catalogue, bands B04/B03/B02. Locked-against-GEE-as-primary constraint in `PROJECT.md` survives because GEE is *not* used for fetching; the data source is the same Sentinel-2 source whether fetched via GEE or S3.
-- **D-12: ESA WorldCover labels (already locked primary).** No Dynamic World secondary labels in v1. Removing the 10→9-class remap and the secondary-source machinery keeps the satellite path symmetric with the historical path (both label from WorldCover + DEM).
-- **D-13: Cloud handling — STAC query with `eo:cloud_cover < 10`, single-date fetch.** For each target region, pick the lowest-cloud scene from the chosen season. Region/season combos with no qualifying scene are dropped; log the drop count for the same per-reason transparency as Allmaps.
-- **D-14: Class-diversity stratified coverage selection.** Use a coarse 1 km WorldCover summary to find regions rich in cropland, built-up, and flooded/wetland — the classes synthetic doesn't produce and that PROJECT.md already up-weights. Sample 4096-px windows from those regions. Do not sample uniformly globally (would oversample forest and water).
-
-#### Held-out synthetic test set (EVAL-01)
-
-- **D-15: Hold out whole Azgaar source maps end-to-end.** All renderer styles, all pyramids, all tiles from a held-out map go to test. Zero spatial leakage by construction. The nested-pyramid overlap discussion is moot because adjacent pyramids share a source map and a split.
-- **D-16: ~15% by seeded random, stratified across Azgaar continent templates.** Each template contributes proportionally to the test set. Splitter uses a fixed seed for reproducibility.
-- **D-17: Sibling directories: `data/synthetic/train/` and `data/synthetic/test/`.** Filesystem-level separation. Training DataLoader points at `train/`; it literally cannot see `test/`. Per-map subdirectory structure is identical inside each.
-- **D-18: Snapshot at first build, frozen by ID list.** First `build_dataset.py` run computes the seeded stratified split and writes `data/synthetic/split.json` listing test-set map IDs. Subsequent builds read the manifest; map IDs in the list go to `test/`, everything else (including newly generated maps) goes to `train/`. **The Phase 4 test set never changes after first recording.**
+#### Carried forward UNCHANGED (do not re-discuss)
+- **D-15 / D-16 split semantics:** whole Azgaar source held out end-to-end, stratified by
+  continent template, fixed seed 42, ~15%.
+- 9/3-class taxonomy; height re-normalisation (flat ≤20 / hilly 20–55 / mountainous >55
+  over `[0,100]`); class-conditional per-source loss weights; `sample_weights.json` schema.
+- D-01 through D-14 (Allmaps wiring, IIIF fetch, STAC Sentinel-2, satellite source logic).
 
 ### Claude's Discretion
-
-- IIIF image fetcher implementation (HTTP client choice, retry policy, on-disk caching of intermediate JPEGs) — researcher/planner to decide.
-- Storage layout for the multi-scale pyramid (per-pyramid subdirectory vs flat naming convention vs sqlite index) — Claude's call during planning unless the researcher surfaces a specific tradeoff.
-- Sentinel-2 STAC client library (`pystac-client` vs raw `requests`) — Claude's call.
-- Per-pyramid `sample_weights.json` scoping (per-source map vs per-pyramid vs per-tile) — Claude's call during planning, but the per-source values from `scripts/historical/label.py:40` are locked and must propagate to every tile from that source.
+- Exact gcsfs/fsspec abstraction shape in tiling.py — researcher/planner decide within RW-01.
+- Manifest JSON schema (flat vs nested) — researcher recommends below.
+- Verification granularity (count vs checksum) — researcher recommends below.
 
 ### Deferred Ideas (OUT OF SCOPE)
-
-#### v2 (post-HuggingFace upload)
-
-- **PaliGemma-driven semi-automatic georeferencing.** The full pipeline described in PROJECT.md `DECISION-georeferencing-pipeline` step 3 — generate dense terrain predictions on unregistered maps with the Phase-1 fine-tuned PaliGemma, cross-correlate against a WorldCover + Copernicus DEM reference grid for rigid alignment, then refine with thin-plate-spline warping anchored on coastlines / mountain ranges / major water bodies. **Note:** the locked precedence in `DECISION-georeferencing-pipeline` survives — we just don't *implement* steps 3 and 4 in v1. Add `GEOREF-V2` to `.planning/REQUIREMENTS.md`.
-- **Manual MapWarper / QGIS GCP placement.** Same v2 bucket as the PaliGemma path. Provides a per-map manual fallback for the unregistered manifest.
-
-#### Future iterations within Phase 2 (not in plan-01)
-
-- **Per-source loss weights for the synthetic stream.** Currently only the historical source has weights defined (`scripts/historical/label.py:40`). Synthetic and satellite need their own — the planner should propose values and surface them for user approval. Synthetic might be uniform-1.0 (its labels are ground-truth by construction); satellite should down-weight forest/water (over-represented) and up-weight cropland/built-up/wetland (matches PROJECT.md schema constraint).
-- **Storage versioning.** Dataset reproducibility — should the build write a `MANIFEST.json` with checksums + source code commit hash? Worth a follow-up plan once the pipelines stabilise.
-
-#### Documentation edits triggered by this discussion
-
-- `.planning/ROADMAP.md` Phase 2 Success Criterion #2 — drop the PaliGemma semi-auto requirement; replace with "unregistered maps are emitted to `unregistered_manifest.json` for v2 processing (manual fallback + PaliGemma semi-auto deferred)".
-- `.planning/REQUIREMENTS.md` — add `GEOREF-V2` under v2 Requirements, covering both PaliGemma semi-auto and manual fallback.
-- `.planning/STATE.md` Deferred Items — add the two v2 georeferencing items.
-
-These edits should be folded into the Phase 2 plan-01 commit, since they're load-bearing for the plan's scope.
+- None added by REWORK discussion. Prior deferred items (PaliGemma semi-auto georeferencing,
+  manual MapWarper/QGIS) remain deferred.
 </user_constraints>
 
 <phase_requirements>
@@ -74,768 +74,875 @@ These edits should be folded into the Phase 2 plan-01 commit, since they're load
 
 | ID | Description | Research Support |
 |----|-------------|------------------|
-| PHASE-02 | Phase 2 complete — labelled pixel-pair dataset produced from three source families (historical illustrated maps, synthetic illustrated maps, satellite-derived imagery) with `image.png`, `land_cover.png`, `topography.png`, and `sample_weights.json` per map | Standard Stack (rasterio + pystac-client + Pillow) and Architecture Patterns 1-5 cover all three families; the existing `historical/{label,worldcover,dem}.py` modules are reused verbatim by the satellite path; the new tiler module is the cross-family integration point |
-| EVAL-01 | Held-out synthetic test set exists, generated by the same Azgaar + Pillow pipeline as training but unseen during training | CONTEXT D-15..D-18 lock the filesystem-level separation (`data/synthetic/{train,test}/`); the seeded stratified-by-Azgaar-template split + frozen `split.json` manifest are documented in "Validation Architecture" with two specific tests (`test_no_train_test_intersection`, `test_split_manifest_frozen`); Open Question #5 surfaces the synthetic dataset target size (~50 source maps) needed to make a 15% stratified hold-out statistically reasonable |
+| PHASE-02 | Phase 2 complete — labelled pixel-pair dataset produced from three source families with `image.png`, `land_cover.png`, `topography.png`, and `sample_weights.json` per map — **now with GCS as the single canonical store** | RW-01 section (gcsfs streaming); RW-04 section (all three families); tiling.py refactor design covers the integration point |
+| EVAL-01 | Held-out synthetic test set exists, unseen during training | RW-02 manifest hard-fail (prevents mis-named file from skewing the hold-out); `split.json` now at `gs://…/data/synthetic/split.json`; split semantics D-15/D-16 unchanged; Validation Architecture section maps observability points |
 </phase_requirements>
+
+---
 
 ## Summary
 
-Phase 2 produces a pre-tiled, nested multi-scale (224 / 448 / 896) pixel-label dataset from
-three independent source families, with a fourth orchestration layer (the tiler) shared by
-all three. The high-level shape is fully locked by `02-CONTEXT.md`; this research surfaces
-the *plannable details* the planner needs to write tasks against.
+This rework makes Google Cloud Storage the single canonical store for all Phase 2 pipeline
+outputs. The prior research (2026-05-15) covered the data pipeline domain thoroughly
+(Allmaps, IIIF, STAC, tiler geometry); this document focuses exclusively on the four
+GCS-persistence questions the planner is blocked on.
 
-**Three load-bearing findings:**
+**Five concrete findings this research delivers:**
 
-1. **Allmaps publishes a 176 MB bulk open-data dump at `https://files.allmaps.org/maps.geojsonl`.**
-   `[VERIFIED: HTTP GET 2026-05-15]` Total maps: **58,666 georeferenced annotations across all
-   contributing institutions**. **David Rumsey share: 10,455 georeferenced canvases under 337
-   distinct atlas manifests.** Filtering by century requires hitting LUNA for date metadata
-   (the dump's `label` field carries titles, not publication dates). The plan should
-   *download the dump offline once* and intersect with LUNA year-by-year results, instead of
-   probing `annotations.allmaps.org` per-result. This is a free order-of-magnitude reduction
-   in API calls and removes Allmaps rate-limit as a phase risk.
+1. **The recommended tiling.py abstraction is a thin `_GCSWriter` shim over
+   `gcsfs.GCSFileSystem`.** It replaces `Path`-based writes with `fs.pipe_file(path, bytes)`
+   calls at six touch points in `tiling.py`. Pillow `.save(fh)` works correctly via
+   `fs.open(path, 'wb')` because `GCSFile` implements the full seekable/writable buffer
+   protocol. The shim adds zero new dependencies — gcsfs 2026.5.0 is already installed.
+   `[VERIFIED: gcsfs API inspection + GCSFile protocol check 2026-05-16]`
 
-2. **Sentinel-2 L2A via STAC + COG is a near-zero-friction third source.**
-   `[VERIFIED: live STAC query 2026-05-15]` Collection `sentinel-2-l2a` at
-   `https://earth-search.aws.element84.com/v1` exposes a `visual` asset (pre-stacked
-   TCI True-Color Image, B04+B03+B02 as 3-band uint8 COG). For our RGB-only requirement this
-   eliminates the need to fetch and stack three separate band COGs. Pair with the existing
-   `worldcover.py` + `dem.py` fetchers (which already accept any rasterio dataset as the target
-   grid) and the labels half of the satellite pipeline is **zero new code**.
+2. **Small-object write cost for the full 100-map build: ~$6 in GCS class A ops, ~65 minutes
+   wall-clock with 32 threads.** Sequential writes would take ~35 hours. The mitigation the
+   planner must bake in is a `ThreadPoolExecutor(max_workers=32)` in the per-pyramid tile
+   write loop. No egress cost (writes to GCS are ingress). `[ASSUMED: GCS pricing from
+   documented rate of $0.05/10,000 class A ops; latency from documented typical 50-150ms
+   same-region PUT; confirmed no quota concern at 32 threads against 1000 req/s bucket limit]`
 
-3. **The `unregistered_manifest.json` artifact is the v2 hand-off, not a phase-2 deliverable.**
-   `02-CONTEXT.md` defers the PaliGemma semi-auto path (DECISION-georeferencing-pipeline
-   step 3) to v2 but keeps the locked precedence. Phase 2 plans should emit the manifest
-   for any LUNA result that misses Allmaps, with the manifest entries enriched enough that
-   v2 can pick up cleanly (LUNA item id + IIIF manifest URL + best-effort thumbnail).
+3. **RW-02 manifest validation must run before `load_or_create_split` and must also drive
+   stratification.** The recommended `manifest.json` schema is a flat `entries` dict mapping
+   `filename → {template}`. The validation checks filename regex, manifest/GCS-listing
+   cross-reference, and template/prefix consistency. `stratified_split` is modified to use
+   `manifest["entries"][fn]["template"]` instead of `template_key(sid)` — making the manifest
+   authoritative for both naming and grouping. `[VERIFIED: template_key() tested against
+   RW-02 naming convention 2026-05-16]`
 
-**Primary recommendation:** structure Phase 2 as **four parallel-track plans**: (1) Historical
-pipeline refactor — Allmaps wiring, IIIF fetch, GCP affine, `unregistered_manifest` shape;
-(2) Synthetic pipeline — Azgaar build + stratified train/test split + held-out frozen manifest;
-(3) Satellite pipeline — STAC client + class-diversity coverage scan + RGB fetch reusing
-existing label functions; (4) Tiler — nested-pyramid materialisation shared by all three. The
-tiler is the integration point — every source-family per-map directory feeds into it identically.
+4. **RW-03 pull-once verification: membership + presence + 10% pyramid file-count spot-check.**
+   No per-file MD5/CRC: that would require ~1.25M GCS API calls for the full dataset. The
+   `fs.get(remote, local, recursive=True)` pattern is idempotent (safe after preemption) and
+   composes cleanly with the existing GCS checkpoint resume in `gcs_checkpoint.py`. `[VERIFIED:
+   gcsfs.GCSFileSystem.get signature confirmed 2026-05-16]`
+
+5. **`render.py` does NOT read from GCS in the Phase 2 pipeline.** It is called with a local
+   GeoJSON path and returns a PIL.Image in memory. The `gs://…/data/toons/` reference in
+   CONTEXT.md describes Phase 1 PaliGemma training data — irrelevant to Phase 2 build scripts.
+   The **historical pipeline** (`unregistered_manifest.json`, built GeoTIFFs) is where the
+   local-read assumption lives and where RW-04 requires GCS migration. `[VERIFIED: render.py
+   and build_historical_dataset.py code read 2026-05-16]`
+
+**Primary recommendation:** Structure the rework as parallel tracks matching the five plans:
+(02-01) migrate the synthetic pipeline to GCS (RW-01 + RW-02 + split.json at GCS); (02-02)
+tiling.py `_GCSWriter` shim + concurrency; (02-03) historical pipeline GCS migration (RW-04);
+(02-04) satellite pipeline GCS migration (RW-04); (02-05) finetune/evaluate pull-once + verify
+(RW-03). Prior 02-0x plans are void; all five must be replanned.
+
+---
 
 ## Architectural Responsibility Map
 
-| Capability | Primary Tier | Secondary Tier | Rationale |
-|------------|-------------|----------------|-----------|
-| Search Rumsey by year | Python module (`historical/rumsey.py`) | LUNA REST API | LUNA is the only date-aware index for Rumsey; CONTEXT D-01 deletes WMS code so this is the single search path |
-| Resolve manifest → georeferencing | Python module (`historical/allmaps.py`) | Allmaps annotations REST API OR offline dump | Two valid resolution strategies — the offline dump approach is plannable optimization |
-| Fetch IIIF image | Python module (HTTP client) | David Rumsey IIIF Image API (Cantaloupe/LUNA-bridge server) | LUNA hosts the IIIF surface; standard IIIF 3.0 size/region semantics apply |
-| Affine GCP fit | Python (`rasterio.transform.from_gcps`) | rasterio + GDAL | GDAL's `GDALGCPsToGeoTransform` is the canonical least-squares affine — no need to hand-roll |
-| Fetch WorldCover labels | Python (`historical/worldcover.py`) | GDAL VSI-CURL → s3://esa-worldcover | EXISTING — reuse verbatim for satellite pipeline |
-| Fetch DEM topography | Python (`historical/dem.py`) | GDAL VSI-CURL → s3://copernicus-dem-30m | EXISTING — reuse verbatim |
-| STAC search Sentinel-2 | Python (`pystac-client` recommended) | Element84 earth-search-aws v1 | Standard STAC API; pystac-client adds `eo:cloud_cover` query helpers |
-| COG byte-range read | Python (`rasterio.open(url).read(window=...)`) | GDAL VSI-CURL | Byte-range reads are GDAL's job; we never download a full S2 tile |
-| Class-diversity coverage scan | Python (`historical/worldcover.py` reused at coarse res) | Locally cached coarse-WC summary | Build a one-shot ~1 km global summary file, query it per region |
-| Render synthetic | Python Pillow (`scripts/render.py`) | Pillow `ImageDraw.polygon` | EXISTING — reuse |
-| Synthetic split | Python (`build_dataset.py`) — new sub-command | seeded RNG + `split.json` manifest | Filesystem-level separation per D-15..D-18 |
-| Multi-scale pyramid tiling | Python module (NEW: `scripts/tiling.py`) | Pillow + numpy | No library does this with strict-nested 1+4+16 geometry; custom but small |
-| Per-map output schema | Filesystem convention | `image.png` / `land_cover.png` / `topography.png` / `sample_weights.json` | EXISTING — all three families conform |
+> Changed rows only — for unchanged rows (Rumsey, Allmaps, STAC, etc.) see the 2026-05-15
+> research. The new tier column shows whether a component writes to GCS directly or uses
+> local scratch.
 
-## Standard Stack
+| Capability | Primary Tier | GCS Write? | Rationale |
+|------------|-------------|------------|-----------|
+| Synthetic raw GeoJSON store | `gs://…/data/synthetic/raw/` | READ from GCS | User uploads; build script reads via gcsfs |
+| Synthetic manifest.json | `gs://…/data/synthetic/raw/manifest.json` | READ from GCS | User-authored; hard-fail validation reads it |
+| Synthetic split.json | `gs://…/data/synthetic/split.json` | WRITE to GCS | Written once at first build; frozen thereafter |
+| Synthetic train/test tiles | `gs://…/data/synthetic/{train,test}/` | WRITE to GCS | gcsfs streaming via _GCSWriter shim in tiling.py |
+| Historical unregistered manifest | `gs://…/data/historical/raw/unregistered_manifest.json` | WRITE to GCS | RW-04 requires GCS canonical; currently writes local |
+| Historical built samples | `gs://…/data/historical/dataset/` | WRITE to GCS | RW-04 |
+| Satellite resolved scenes manifest | `gs://…/data/satellite/resolved_scenes.json` | WRITE to GCS | RW-04 |
+| Satellite built samples | `gs://…/data/satellite/dataset/` | WRITE to GCS | RW-04 |
+| Pyramid tiling output | Routed through `_GCSWriter` shim | WRITE to GCS | shared tiler; shim abstracts local vs GCS |
+| Training data access (finetune) | Local scratch (pull-once from GCS) | READ from GCS → local | RW-03; carve_train_val unchanged |
+| Test data access (evaluate) | Local scratch (pull-once from GCS) | READ from GCS → local | RW-03; load_test_pyramid_dirs unchanged |
 
-### Core
+---
+
+## RW-01: fsspec/gcsfs Path-Abstraction Refactor
+
+### Recommended Approach: Thin `_GCSWriter` Shim
+
+Do NOT use `universal_pathlib` / `UPath` (not installed; adds a dependency; its Path-like
+API would require more extensive surgery to tiling.py's shutil and json calls). Do NOT
+wrap every call in `fsspec.open` globally — that would require threading the filesystem
+object through six separate call sites in different idioms.
+
+**The recommended design is a `_GCSWriter` shim class with three methods:**
+
+```python
+# Source: gcsfs.GCSFileSystem API verified 2026-05-16; GCSFile protocol verified 2026-05-16
+import io, json
+import gcsfs
+
+GCS_PROJECT = "narrative-campaign"  # from gcs_checkpoint.py
+
+class _GCSWriter:
+    """Thin write-only abstraction over a GCS prefix.
+
+    Replicates the handful of pathlib.Path methods that tiling.py needs
+    for the output side only — reads (map_dir/) stay local Path-based.
+
+    Instances are NOT thread-safe; create one per-pyramid in the thread pool.
+    """
+    def __init__(self, fs: gcsfs.GCSFileSystem, prefix: str):
+        # prefix is a bare GCS path: "mapclass-training-northeast1/data/synthetic/train/..."
+        self._fs = fs
+        self._prefix = prefix.rstrip("/")
+
+    def __truediv__(self, name: str) -> "_GCSWriter":
+        return _GCSWriter(self._fs, f"{self._prefix}/{name}")
+
+    def mkdir(self, parents=True, exist_ok=True):
+        # GCS has no real directories; mkdirs is a no-op for objects
+        self._fs.mkdirs(self._prefix, exist_ok=True)
+
+    @property
+    def name(self) -> str:
+        return self._prefix.rsplit("/", 1)[-1]
+
+    def write_bytes(self, data: bytes) -> None:
+        self._fs.pipe_file(self._prefix, data)
+
+    def write_text(self, text: str, encoding="utf-8") -> None:
+        self._fs.pipe_file(self._prefix, text.encode(encoding))
+
+    def open(self, mode: str = "wb"):
+        """Return a writable file-object for Pillow .save() calls."""
+        return self._fs.open(self._prefix, mode)
+```
+
+**Touch points in `tiling.py` — complete inventory** (6 sites):
+
+| Line | Current pattern | New pattern |
+|------|----------------|-------------|
+| `out = Path(out_root) if out_root is not None else map_dir / "pyramids"` | `Path(out_root)` | If `out_root` is a `_GCSWriter`, skip the `Path()` wrap; if None, construct from `_GCSWriter(fs, map_dir_gcs + "/pyramids")` |
+| `out.mkdir(parents=True, exist_ok=True)` | pathlib | `_GCSWriter.mkdir()` (no-op, GCS is flat) |
+| `pdir = out / pid` → `pdir.mkdir(...)` | pathlib | `_GCSWriter.__truediv__` + `_GCSWriter.mkdir()` |
+| `img.crop(box).save(pdir / t["image"])` × 3 per tile | `Path / str → PIL.Image.save(Path)` | `buf = io.BytesIO(); img.crop(box).save(buf, "PNG"); (pdir / t["image"]).write_bytes(buf.getvalue())` |
+| `(pdir / "pyramid.json").write_text(json.dumps(...))` | pathlib | `_GCSWriter.write_text(...)` |
+| `shutil.copyfile(map_dir / _WEIGHTS_FILE, pdir / _WEIGHTS_FILE)` | shutil | `(pdir / _WEIGHTS_FILE).write_bytes(weights_blob)` |
+
+**Reads in `tiling.py` stay local-Path-based** — `map_dir` is always a local path (the
+build scripts stage renderings locally before calling `tile()`; only the output writes go to
+GCS). The `_GCSWriter` is used only for `out_root`.
+
+**Pillow `.save()` to GCS via `fs.open(path, 'wb')` — confirmed working:**
+`gcsfs.GCSFileSystem.open()` returns a `GCSFile` (subclass of `fsspec.AbstractBufferedFile`)
+that implements `write()`, `seek()`, `tell()`, `flush()`, and `close()` — the full protocol
+Pillow's PNG encoder requires. The write is buffered in memory and committed atomically on
+`close()` / `__exit__`. For tile-sized PNGs (typically 50–200 KB), the buffer fits trivially.
+`[VERIFIED: GCSFile method inspection 2026-05-16]`
+
+**Preferred write API for pre-buffered data: `fs.pipe_file(path, bytes)`** — avoids the
+open/close protocol overhead for data already in memory (the `io.BytesIO` buf case). This is
+the correct pattern for JSON manifests and copied weight files. `[VERIFIED: gcsfs.pipe_file
+source inspected 2026-05-16]`
+
+### Local-filesystem fallback for tests
+
+The `_GCSWriter` should be testable against a local temp dir by accepting any `fsspec`
+`AbstractFileSystem` (not just `GCSFileSystem`). Use `fsspec.filesystem("file")` in tests:
+
+```python
+# test pattern — no GCS credentials needed in CI
+import fsspec
+local_fs = fsspec.filesystem("file")
+writer = _GCSWriter(local_fs, str(tmp_path / "synthetic" / "train"))
+tiling.tile(map_dir, out_root=writer)
+```
+
+This pattern matches the existing `gcs_checkpoint.py` mock approach (tests patch the
+`gcsfs.GCSFileSystem` import; here we pass the fs object explicitly, which is even cleaner).
+
+### Where to put `_GCSWriter`
+
+Recommend `scripts/gcs_io.py` (a new module alongside `gcs_checkpoint.py`). This keeps
+GCS I/O in one place, importable by all three build scripts. The lazy-import pattern from
+`gcs_checkpoint.py` should be applied: `gcsfs` imported inside a `try/except` at module
+level so the planning VM (where gcsfs may be absent) can import the module safely.
+
+---
+
+## RW-01b: Streaming Small-Object Write Throughput and Cost
+
+### Cost Estimate (MEDIUM confidence — documented rates, not live measurement)
+
+| Item | Quantity | Rate | Cost |
+|------|----------|------|------|
+| GCS class A ops (PUT) | ~1.25 M per full 100-map build | $0.05 / 10,000 | ~$6.24 |
+| Ingress to GCS from Compute Engine (same region) | ~60 GB | FREE | $0 |
+| Storage (standard, US multi-region) | ~60 GB/month | $0.020/GB | ~$1.20/mo |
+
+**Calculation:** 100 sources × 3 styles × ~64 pyramids × 65 writes/pyramid
+(21 tiles × 3 PNG types + 1 pyramid.json + 1 sample_weights.json) = 1,248,000 class A ops.
+Storage: 100 × 3 × 64 × 21 × 3 × avg 75 KB ≈ 90 GB; conservative estimate ~60–90 GB.
+
+### Throughput Estimate
+
+| Mode | Wall-clock estimate |
+|------|---------------------|
+| Sequential (1 thread) | ~35 hours at 100 ms avg PUT latency |
+| 32 threads (recommended) | ~65 minutes |
+| GCS bucket write quota | 1,000 req/s default; 32 threads × 10 req/s = 320 req/s — no quota risk |
+
+**Mitigation the planner MUST bake in:** `ThreadPoolExecutor(max_workers=32)` wrapping the
+per-pyramid tile-write loop. The `gcsfs.GCSFileSystem` is thread-safe for concurrent `open()`
+and `pipe_file()` calls (each call creates its own HTTP connection from the underlying
+`aiohttp` session pool). `[VERIFIED: gcsfs uses asyncio internally; sync wrapper is
+thread-safe per gcsfs docs and source review 2026-05-16]`
+
+**What dominates:** operation COUNT (class A ops), not egress (writes to GCS have no egress
+cost). The write rate matters more than bandwidth. 32 threads keeps us under quota with
+comfortable margin.
+
+**Alternative the user rejected (for reference only):** buffering tiles into a tar or parquet
+archive per map-dir reduces class A ops from 65/pyramid to 1/map-dir (~65× reduction, ~$0.10
+total). User chose direct streaming; document the cost and move on.
+
+---
+
+## RW-02: Raw-Input Naming Contract and Manifest Hard-Fail
+
+### Recommended `manifest.json` Schema
+
+```json
+{
+  "version": "1",
+  "entries": {
+    "europe_01.geojson": {"template": "europe"},
+    "europe_02.geojson": {"template": "europe"},
+    "americas_01.geojson": {"template": "americas"},
+    "east_asia_01.geojson": {"template": "east_asia"}
+  }
+}
+```
+
+**Schema rationale:**
+- Flat `entries` dict keyed by filename — O(1) lookup at validation time.
+- Each value is `{"template": str}` — one field now; extensible later without breaking the
+  schema version (add fields; version bump gates breaking changes).
+- `"version": "1"` — allows a `validate_manifest` check to reject stale manifests.
+- Template value is what `stratified_split` uses as the grouping key — authoritative.
+
+**Filename convention regex:** `^[a-z][a-z0-9_]*_[0-9]{2}\.geojson$`
+- Lowercase alpha-start required (no leading digit or underscore).
+- Zero-padded two-digit numeric suffix (`_01` through `_99`).
+- `.geojson` extension only.
+
+### Validation Order in `build_dataset.py` — MANDATORY
+
+```
+1. fs.ls(gs://…/data/synthetic/raw/)  →  gcs_filenames (list of .geojson basenames)
+2. fs.cat(gs://…/data/synthetic/raw/manifest.json)  →  parse manifest
+3. validate_manifest(gcs_filenames, manifest)
+        a. for each gcs_filename: assert regex match  →  HARD FAIL if any mismatch
+        b. for each gcs_filename: assert in manifest["entries"]  →  HARD FAIL if unlisted
+        c. for each manifest entry: assert gcs_filename in gcs_filenames  →  HARD FAIL if phantom
+        d. for each entry: assert manifest["entries"][fn]["template"] == fn.rsplit("_",1)[0].replace("-","_")
+           (template must equal the part before _NN)  →  HARD FAIL if mismatch
+4. id_to_template = {_sanitize_stem(fn[:-8]): manifest["entries"][fn]["template"] for fn in gcs_filenames}
+5. load_or_create_split(gcs_split_path, source_ids, id_to_template)
+        (reads split.json from GCS if it exists; writes to GCS if not)
+6. Build loop
+```
+
+**Why the ordering matters:** `load_or_create_split` freezes the EVAL-01 hold-out. If a
+mis-named file skips validation and enters the split, the test set is permanently contaminated.
+The hard-fail before step 5 is the only place that can prevent this.
+
+**`stratified_split` change:** the function currently calls `template_key(sid)` for grouping.
+After RW-02, it receives `id_to_template: dict[str, str]` and uses
+`id_to_template.get(sid, template_key(sid))` (manifest is authoritative; `template_key` is
+the fallback for any source the manifest somehow doesn't cover — but the hard-fail above
+means the fallback should never be reached in production).
+
+**`load_or_create_split` GCS I/O change:** `split_path` changes from a local
+`Path("data/synthetic/split.json")` to a GCS path read/written via gcsfs:
+
+```python
+# Before (local):
+if split_path.exists():
+    data = json.loads(split_path.read_text())
+    ...
+split_path.write_text(json.dumps({...}))
+
+# After (GCS):
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+split_gcs = "mapclass-training-northeast1/data/synthetic/split.json"
+if fs.exists(split_gcs):
+    data = json.loads(fs.cat(split_gcs).decode())
+    ...
+fs.pipe_file(split_gcs, json.dumps({...}).encode())
+```
+
+---
+
+## RW-03: Pull-Once + Verify for finetune_seg / evaluate_seg
+
+### Bulk-Fetch Design
+
+```python
+# scripts/gcs_io.py — add pull_dataset() helper
+# Source: gcsfs.GCSFileSystem.get signature verified 2026-05-16
+
+def pull_dataset_from_gcs(
+    subset: str,               # "train" or "test"
+    local_scratch: Path,
+    gcs_prefix: str = "gs://mapclass-training-northeast1/data/synthetic",
+) -> Path:
+    """Bulk-fetch a train or test subset from GCS to local scratch.
+
+    Idempotent: safe to re-run after preemption (fs.get overwrites local files).
+    Returns the local root for the subset (e.g. local_scratch / "train").
+    """
+    fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+    remote = f"{gcs_prefix}/{subset}/"
+    local_root = local_scratch / subset
+    local_root.mkdir(parents=True, exist_ok=True)
+    # recursive=True downloads the entire subtree
+    fs.get(remote, str(local_root), recursive=True)
+    return local_root
+```
+
+**Call site in `finetune_seg.py`:**
+- Add `--scratch-dir` arg (default `/tmp/mapclass_data`).
+- At job start (before `carve_train_val`): call `pull_dataset_from_gcs("train", scratch)`.
+- Read `split.json` from GCS once; pass it to `verify_pull`.
+- Then proceed with existing `carve_train_val(local_train_root)` — **unchanged**.
+
+**Call site in `evaluate_seg.py`:**
+- Add `--scratch-dir` arg.
+- At job start: call `pull_dataset_from_gcs("test", scratch)`.
+- Read `split.json` from GCS; verify pull; then `load_test_pyramid_dirs(local_split_json, local_data_root)` — **unchanged**.
+
+### Verification Design
+
+```
+verify_pull(local_root: Path, split_json: dict, subset: str) -> None:
+
+  1. For each map_id in split_json[subset]:
+     - assert (local_root / map_id).is_dir()  <- membership + presence
+
+  2. For a 10% sample of (local_root / map_id / pyramids / py_r*):
+     - assert (pdir / "pyramid.json").exists()
+     - count PNGs in pdir: expect 63 (21 tiles × 3 types); assert >= 60 (tolerance for partial edge pyramids)
+
+  3. Raise RuntimeError (not sys.exit) on any failure — allows caller to handle.
+```
+
+**Why not per-file checksums:** CRC32C verification would require one `fs.info(path)` GCS API
+call per file × ~1.25M files = 1.25M API ops = ~$0.006 extra and ~3 additional minutes.
+Not worth it for routine verification; GCS is highly reliable. Reserve CRC32C verification for
+a manual debug mode (`--verify-checksums` flag) if corruption is ever suspected.
+
+### Composition with GCS Checkpoint Resume
+
+```
+Job start sequence (new):
+  1. pull_dataset_from_gcs(subset, local_scratch)   <- RW-03 (NEW)
+  2. verify_pull(local_root, split_json, subset)    <- RW-03 (NEW)
+  3. gcs_latest_checkpoint(config_name)             <- EXISTING (gcs_checkpoint.py)
+  4. training/eval loop from local files            <- EXISTING (unchanged)
+```
+
+On preemption: new box repeats steps 1–4. Step 1 is idempotent (overwrites if cached).
+Step 3 resumes from the latest checkpoint. **No state is lost between preemptions.**
+
+---
+
+## RW-04: GCS-Canonical Reads — Fresh-Box Audit
+
+### `render.py` — NOT a GCS read concern
+
+`render.py` is called by `build_dataset.py` as `render_one(geojson_path, style)` — it
+receives a local GeoJSON path and returns a `PIL.Image` in memory. It does NOT read from
+`data/toons/` in the Phase 2 pipeline. The `gs://…/data/toons/<biome>/` path in CONTEXT.md
+describes Phase 1 PaliGemma training tiles — a separate concern. `[VERIFIED: render.py code
+read 2026-05-16]`
+
+### Historical Pipeline — Local-Read Assumptions to Fix
+
+| Component | Current read | Required for fresh-box | Fix |
+|-----------|-------------|------------------------|-----|
+| `build_historical_dataset.py search` | Writes `raw_dir/unregistered_manifest.json` to local | Must write to GCS canonical path | Change `manifest_path` default to GCS; write via `fs.pipe_file` |
+| `build_historical_dataset.py build` | Reads `raw_dir/georeferenced/*.tif` from local | Raw GeoTIFFs are re-downloadable from Rumsey (not canonical) | **Scratch acceptable**: Rumsey TIFs are ephemeral-OK; download fresh per build run |
+| `build_historical_dataset.py build` | Writes `out_dir/` (dataset) to local | Must persist to GCS | Change `out_dir` default to GCS prefix; tile via `_GCSWriter` |
+| `unregistered_manifest.json` in GCS | CONTEXT.md states it exists at `gs://…/data/historical/raw/unregistered_manifest.json` | Build must ALSO write to GCS | Fixed by first bullet above |
+
+**Conclusion:** raw GeoTIFFs from Rumsey are ephemeral-safe (the LUNA API is the source of
+truth; re-download on each job). Built datasets (pyramids, manifests, split.json) MUST be
+GCS-canonical. The `build_historical_dataset.py search` output (`unregistered_manifest.json`)
+must also land in GCS (it is the v2 hand-off artifact).
+
+### Satellite Pipeline — Local-Read Assumptions to Fix
+
+| Component | Current read | Fix |
+|-----------|-------------|-----|
+| `_DEFAULT_SUMMARY` = `data/satellite/coverage_summary.json` | Local | Change default to GCS path; write summary to GCS once, read from GCS on subsequent runs |
+| `_DEFAULT_MANIFEST` = `data/satellite/resolved_scenes.json` | Local | Change to GCS path |
+| `_DEFAULT_OUT` = `data/satellite/dataset` | Local | Change to GCS prefix; tile via `_GCSWriter` |
+| Raw COG byte-range reads (Sentinel-2, WorldCover, DEM) | Network → in-memory | **Unchanged** — these never touch local disk (GDAL VSI-CURL is ephemeral by design) |
+
+---
+
+## Standard Stack (GCS I/O additions)
+
+> For the unchanged domain stack (rasterio, Pillow, pystac-client, etc.) see the prior
+> 2026-05-15 research. Only the new/changed packages are listed here.
+
+### Core (additions for GCS I/O)
+
 | Library | Version | Purpose | Why Standard |
 |---------|---------|---------|--------------|
-| rasterio | 1.5.0 | GeoTIFF I/O, GCP→affine, reprojection, COG byte-range reads | EXISTING in `requirements.txt`; canonical Python wrapper over GDAL; `from_gcps` is the GDAL-blessed affine fit `[VERIFIED: pypi 2026-01-05]` |
-| pyproj | 3.7.2 | CRS / coordinate-system transforms | EXISTING; standard for any non-trivial reprojection `[VERIFIED: pypi 2025-08-14]` |
-| Pillow | 12.2.0 | Raster image I/O for PNG outputs, polygon rasterisation in synthetic renderer | EXISTING; project's canonical 2-D raster lib `[VERIFIED: pypi 2026-04-01]` |
-| numpy | 2.4.4 | array math, masking, slope gradients | EXISTING `[VERIFIED: pypi 2026-03-29]` |
-| requests | (any 2.x) | HTTP for LUNA, Allmaps, IIIF | EXISTING |
-| pystac-client | 0.9.0 | STAC API search with property-query helpers | Standard for Element84 earth-search; supports dict-style `query={'eo:cloud_cover': {'lt': 10}}` `[VERIFIED: pypi 2025-07-18, docs read 2026-05-15]` |
+| gcsfs | 2026.5.0 | GCS file-system interface (ADC auth + read/write) | **EXISTING** — already in `seg/gcs_checkpoint.py`; the project's established GCS I/O pattern `[VERIFIED: pip show 2026-05-16]` |
+| fsspec | 2026.3.0 | Abstract filesystem interface (local fallback for testing) | **EXISTING** — transitively installed by gcsfs; enables `fsspec.filesystem("file")` for test isolation `[VERIFIED: pip show 2026-05-16]` |
 
-### Supporting
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| pystac | 1.14.3 | parse/manipulate STAC items returned by the search | Implicit dependency of pystac-client; no direct calls needed in our code `[VERIFIED]` |
+### Not Recommended
 
-### Alternatives Considered
-| Instead of | Could Use | Tradeoff |
-|------------|-----------|----------|
-| pystac-client | raw `requests.post` against the STAC API `/search` endpoint | Saves a dep but loses query-syntax sugar and the iterator-with-paging helper; not worth it `[ASSUMED: standard tradeoff]` |
-| `rasterio.transform.from_gcps` (affine LSQ via GDAL) | hand-rolled numpy LSQ over the 6-param affine equations | The hand-roll is ~20 lines and gives more control over residual reporting, but adds a tested-by-us layer that GDAL already has battle-hardened. **Recommendation: use `from_gcps`; only fall back to hand-roll if Phase 2 wants to report per-GCP residuals for QA.** `[CITED: rasterio docs]` |
-| Element84 earth-search-aws | Microsoft Planetary Computer STAC | MS PC has the same Sentinel-2 L2A collection but requires SAS-token sign-in for some assets; earth-search is anonymous and matches our `AWS_NO_SIGN_REQUEST` pattern. `[VERIFIED: earth-search anonymous, registry.opendata.aws]` |
-| Custom tiling | torchgeo `GridGeoSampler` | torchgeo's samplers run inside the DataLoader (random crops at training time), but CONTEXT D-06 *locks* pre-tile-at-build-time. Use torchgeo as a downstream reader in Phase 3 if useful; don't pull it into the build pipeline. `[CITED: torchgeo docs]` |
+| Library | Why Not |
+|---------|---------|
+| universal-pathlib (UPath) | Not installed; adds a dependency; the thin shim achieves the same with zero new deps |
+| google-cloud-storage (direct) | Already a transitive dep of gcsfs; don't use directly — gcsfs is the project's established abstraction |
 
-**Installation (add to `requirements.txt`):**
-```
-pystac-client>=0.9
-```
-(`pystac` arrives transitively. Everything else is already pinned.)
+**No new packages required.** gcsfs and fsspec are already installed and already the
+project's GCS I/O standard. `requirements.txt` needs no changes for the GCS persistence work.
 
-**Version verification:** All versions above queried live from pypi on 2026-05-15.
+## Package Legitimacy Audit
+
+> Only the GCS I/O packages are audited here — pystac-client and the pre-existing stack were
+> audited in the 2026-05-15 research.
+
+| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
+|---------|----------|-----|-----------|-------------|-----------|-------------|
+| gcsfs | PyPI | ~8 yrs | High (canonical GCS client) | github.com/fsspec/gcsfs | OK | Approved |
+| fsspec | PyPI | ~8 yrs | Very high (core dep of many ML libs) | github.com/fsspec/filesystem_spec | OK | Approved |
+
+`[VERIFIED: slopcheck install gcsfs fsspec — both OK, 2026-05-16]`
+`[VERIFIED: pip show gcsfs Version: 2026.5.0 Home-page: github.com/fsspec/gcsfs, 2026-05-16]`
+
+**Packages removed due to slopcheck [SLOP]:** none
+**Packages flagged as suspicious [SUS]:** none
+
+---
 
 ## Architecture Patterns
 
-### System Architecture Diagram
+### System Architecture Diagram (REWORK — persistence layer only)
 
 ```
-                                  +-------------------------------------+
-                                  |  PHASE 2: BUILD DATASETS            |
-                                  +-------------------------------------+
+  ===== BUILD TIME =====                    ===== TRAIN TIME =====
 
-  ===== HISTORICAL =====        ===== SYNTHETIC =====           ===== SATELLITE =====
+  User (manual)
+  ├── Creates Azgaar GeoJSON exports
+  │   named <template>_<NN>.geojson
+  ├── Authors manifest.json
+  └── Uploads both to GCS synthetic/raw/
+            |
+            v
+  build_dataset.py
+  ├── 1. fs.ls(gs://…/synthetic/raw/)          evaluate_seg.py / finetune_seg.py
+  ├── 2. fs.cat(manifest.json) → validate      ├── 1. fs.cat(split.json from GCS)
+  │      [HARD FAIL if mismatch]               ├── 2. fs.get(gs://…/train/ or test/,
+  ├── 3. fs.cat(split.json) or compute new     │       local_scratch, recursive=True)
+  │      split → fs.pipe_file(split.json)      ├── 3. verify_pull(local, split_json, subset)
+  ├── 4. for each geojson:                     ├── 4. gcs_latest_checkpoint (resume)
+  │      a. fs.cat(geojson) → local temp       └── 5. train/eval from local scratch
+  │      b. render_one(local_temp, style) → PIL.Image (unchanged)
+  │      c. make_label_arrays(local_temp) → PIL.Image (unchanged)
+  │      d. write image.png, lc.png, topo.png, sample_weights.json to local temp
+  │      e. tiling.tile(local_map_dir, out_root=_GCSWriter(fs, gs_train_or_test_prefix))
+  │            └── ThreadPoolExecutor(max_workers=32) for tile writes
+  └── GCS outputs: gs://…/data/synthetic/{train,test}/<map_id>__<style>/pyramids/
+                   gs://…/data/synthetic/split.json
 
-  LUNA search by year             Azgaar GeoJSON dir              Coarse-WC class summary
-  scripts/historical/rumsey.py    data/synthetic/raw/             (NEW: scripts/satellite/
-        |                                |                         coverage.py — 1 km
-        |                                |                         WorldCover summary file
-        v                                v                         scanned for cropland/built-up/
-  Allmaps lookup ----------> 404? -> emit to                       wetland-rich cells)
-  (annotations.allmaps.org           unregistered_                       |
-   per-result, OR offline dump         manifest.json                     v
-   intersection)                       (v2 hand-off)              STAC search per region
-        |                                |                       earth-search.aws.element84.com
-        v                                |                       collections=[sentinel-2-l2a]
-  IIIF Image fetch                       |                       query={'eo:cloud_cover':{'lt':10}}
-  /full/!4096,4096/0/default.jpg         |                              |
-        |                                |                              v
-        v                                |                       COG byte-range RGB fetch
-  Scale GCPs by S=4096/orig_dim          |                       (visual asset: pre-stacked TCI)
-        |                                |                              |
-        v                                |                              v
-  rasterio.transform.from_gcps           |                       Write 4096-px RGB GeoTIFF
-        |                                |                              |
-        v                                |                              |
-  Write GeoTIFF(EPSG:4326, affine)       |                              |
-        |                                |                              |
-        v                                v                              v
-  +---------------------------------------------------------------------------+
-  | per-map directory:                                                        |
-  |   image.png  /  land_cover.png  /  topography.png  /  sample_weights.json |
-  | (label generation reuses existing scripts/historical/worldcover.py +      |
-  |  dem.py for ALL THREE families — same code path)                          |
-  +---------------------------------------------------------------------------+
-                                  |
-                                  v
-                         +-----------------+
-                         |  NEW: tiling.py |
-                         |  multi-scale    |
-                         |  nested-pyramid |
-                         |  decomposer     |
-                         +-----------------+
-                                  |
-              +-------------------+-------------------+
-              v                                       v
-       data/{source}/train/                    data/synthetic/test/
-       <map_id>/                               (synthetic only — D-17)
-         <pyramid_id>/                         <map_id>/<pyramid_id>/...
-           896.png + 896_*.png (lc, topo)
-           448_0.png .. 448_3.png  (4 children)
-           224_0.png .. 224_15.png (16 grandchildren)
-           ... or whatever Claude picks for storage layout (Discretion D-Storage)
+  build_historical_dataset.py (RW-04)         build_satellite_dataset.py (RW-04)
+  ├── search: LUNA → Allmaps → IIIF           ├── coverage-scan → fs.pipe_file(summary.json)
+  │    → GeoTIFF in local scratch             ├── search → fs.pipe_file(resolved_scenes.json)
+  │    → fs.pipe_file(unregistered_manifest)  └── build → tiling.tile(..., _GCSWriter)
+  └── build: local GeoTIFF → label → tiling
+       → _GCSWriter(gs://…/historical/dataset/)
 ```
 
-### Recommended Project Structure
+### Recommended New File: `scripts/gcs_io.py`
+
 ```
 scripts/
-├── historical/
-│   ├── __init__.py
-│   ├── rumsey.py            # EXISTING — refactor per D-01..D-05
-│   ├── allmaps.py           # EXISTING (untracked — commit in plan-01)
-│   ├── label.py             # EXISTING — frozen HISTORICAL_LC_WEIGHTS
-│   ├── worldcover.py        # EXISTING — REUSED by satellite path
-│   ├── dem.py               # EXISTING — REUSED by satellite path
-│   ├── iiif.py              # NEW — IIIF image fetcher (size-best-fit, retries, scale return)
-│   └── georef.py            # NEW — GCP scale + affine fit + GeoTIFF write
-├── satellite/               # NEW package
-│   ├── __init__.py
-│   ├── coverage.py          # NEW — coarse-WC global summary; class-diverse cell picker
-│   ├── stac.py              # NEW — pystac-client wrapper, cloud-filtered search
-│   └── fetch.py             # NEW — COG byte-range RGB fetch → 4096-px GeoTIFF
-├── tiling.py                # NEW — multi-scale nested pyramid (shared by all 3 families)
-├── build_historical_dataset.py  # EXISTING — re-wire per D-04, D-05
-├── build_synthetic_dataset.py   # EXISTING (build_dataset.py) — add train/test split per D-15..D-18
-├── build_satellite_dataset.py   # NEW — coverage-scan / search / build sub-commands
-├── render.py                # EXISTING
-├── label.py                 # EXISTING (synthetic-side)
-├── biome_mapping.py         # EXISTING
-├── toon_mapping.py          # EXISTING
-└── augment.py               # EXISTING
+├── gcs_io.py             # NEW — _GCSWriter shim + pull_dataset_from_gcs + verify_pull
+│                         #       GCS_PROJECT, BUCKET, DATA_PREFIX constants
+│                         #       lazy gcsfs import (same pattern as gcs_checkpoint.py)
+├── seg/
+│   ├── gcs_checkpoint.py # EXISTING — checkpoint write/resume (unchanged)
+│   └── ...
+├── build_dataset.py      # MODIFY — GCS raw/ read, manifest validate, GCS split.json
+├── build_historical_dataset.py  # MODIFY — RW-04 GCS output paths
+├── build_satellite_dataset.py   # MODIFY — RW-04 GCS output paths
+├── tiling.py             # MODIFY — accept _GCSWriter as out_root; add tile write concurrency
+├── finetune_seg.py       # MODIFY — add pull_dataset_from_gcs at startup
+└── evaluate_seg.py       # MODIFY — add pull_dataset_from_gcs at startup
 ```
-**Note:** the existing `scripts/build_dataset.py` orchestrates synthetic. Either keep that name
-or rename to `build_synthetic_dataset.py` for symmetry with the other two. The planner should
-decide and the rename is trivial.
 
-### Pattern 1: Allmaps Lookup with Offline Dump Acceleration
-**What:** Pre-download `https://files.allmaps.org/maps.geojsonl` once. Build a Python `set`
-of Rumsey manifest URLs that have annotations. For each LUNA result, check set membership
-first; only hit `annotations.allmaps.org/?url=<manifest>` when the set hit confirms it.
-**When to use:** Anytime we know in advance we're querying a single institution's
-manifests in bulk. The dump is regenerated nightly per the Allmaps docs.
-**Example:**
+### Pattern 1: _GCSWriter-Based Tile Write with Thread Pool
+
 ```python
-# Source: https://files.allmaps.org/maps.geojsonl (CC0 open data)
-import json, requests, pathlib
+# Source: gcsfs API verified 2026-05-16; io.BytesIO + PIL pattern confirmed
+import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-DUMP_URL = "https://files.allmaps.org/maps.geojsonl"
-DUMP_CACHE = pathlib.Path("data/historical/raw/allmaps_maps.geojsonl")
+def _write_tile(writer: "_GCSWriter", name: str, img_crop) -> None:
+    buf = io.BytesIO()
+    img_crop.save(buf, format="PNG")
+    (writer / name).write_bytes(buf.getvalue())
 
-def build_rumsey_index() -> set[str]:
-    """Return the set of Rumsey manifest URLs in Allmaps. Caches locally."""
-    if not DUMP_CACHE.exists():
-        DUMP_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        with requests.get(DUMP_URL, stream=True, timeout=300) as resp:
-            resp.raise_for_status()
-            with open(DUMP_CACHE, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    f.write(chunk)
-    manifests: set[str] = set()
-    with open(DUMP_CACHE) as f:
-        for line in f:
-            if "davidrumsey" not in line:
-                continue
-            feat = json.loads(line)
-            for canvas in feat.get("properties", {}).get("resource", {}).get("partOf") or []:
-                for m in canvas.get("partOf") or []:
-                    if "manifest" in m.get("id", ""):
-                        manifests.add(m["id"])
-    return manifests
+def tile_to_gcs(map_dir: Path, out_writer: "_GCSWriter",
+                max_workers: int = 32) -> None:
+    """Decompose a completed per-map dir into nested pyramids, writing directly to GCS."""
+    # ... (pyramid geometry logic unchanged) ...
+    write_tasks = []
+    for ox, oy in pyramids:
+        pdir = out_writer / _pyramid_id(ox, oy)
+        pdir.mkdir()
+        tiles = _pyramid_tiles(ox, oy)
+        for t in tiles:
+            box = (t["x"], t["y"], t["x"]+t["size"], t["y"]+t["size"])
+            write_tasks.append((pdir, t["image"], img.crop(box)))
+            write_tasks.append((pdir, t["land_cover"], lc.crop(box)))
+            write_tasks.append((pdir, t["topography"], topo.crop(box)))
+        write_tasks.append((pdir, "pyramid.json",
+                            json.dumps(manifest).encode()))
+        write_tasks.append((pdir, "sample_weights.json", weights_blob))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = []
+        for pdir, name, data in write_tasks:
+            if isinstance(data, (bytes, str)):
+                futs.append(pool.submit((pdir / name).write_bytes,
+                                         data if isinstance(data, bytes)
+                                         else data.encode()))
+            else:  # PIL Image crop
+                futs.append(pool.submit(_write_tile, pdir, name, data))
+        for fut in as_completed(futs):
+            fut.result()  # re-raise any exception
 ```
-`[VERIFIED: 2026-05-15 — dump is 176 MB, contains 58,666 annotations, 10,455 of which are Rumsey
-under 337 distinct manifest URLs]`
 
-### Pattern 2: STAC Cloud-Filtered Sentinel-2 Search
-**What:** Use pystac-client with the dict-style `query` param for `eo:cloud_cover`. Use the
-`visual` asset (pre-stacked B04/B03/B02 TCI) instead of fetching three single-band COGs.
-**When to use:** Every satellite-source fetch in this phase.
-**Example:**
+### Pattern 2: GCS Split.json Read/Write
+
 ```python
-# Source: https://pystac-client.readthedocs.io/en/stable/quickstart.html
-# Source: live STAC query against earth-search.aws.element84.com (2026-05-15)
-import os
-import pystac_client
-import rasterio
-from rasterio.windows import Window
+# Source: gcsfs.pipe_file and .cat verified 2026-05-16
+# Mirrors gcs_checkpoint.py write pattern
 
-os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
+GCS_SPLIT = "mapclass-training-northeast1/data/synthetic/split.json"
 
-ENDPOINT = "https://earth-search.aws.element84.com/v1"
+def load_or_create_split_gcs(fs, source_ids, id_to_template) -> set[str]:
+    """GCS-canonical version of build_dataset.load_or_create_split."""
+    if fs.exists(GCS_SPLIT):
+        data = json.loads(fs.cat(GCS_SPLIT).decode())
+        return set(data["test"])
 
-def find_lowest_cloud_scene(bbox, datetime_range, max_cloud=10):
-    client = pystac_client.Client.open(ENDPOINT)
-    search = client.search(
-        collections=["sentinel-2-l2a"],
-        bbox=bbox,
-        datetime=datetime_range,
-        query={"eo:cloud_cover": {"lt": max_cloud}},
-    )
-    items = list(search.items())
-    if not items:
-        return None
-    return min(items, key=lambda it: it.properties.get("eo:cloud_cover", 100))
+    # Print stratification groups for human review (WR-08) — unchanged
+    grouping: dict[str, list[str]] = {}
+    for sid in source_ids:
+        grouping.setdefault(id_to_template.get(sid, template_key(sid)), []).append(sid)
+    print("  Derived stratification groups (review before split.json frozen — WR-08):")
+    for tmpl in sorted(grouping):
+        print(f"    {tmpl}: {sorted(grouping[tmpl])}")
 
-def fetch_visual_window(item, dst_window_px: int = 4096):
-    """Read a centred 4096x4096 window from the TCI/visual asset (no full download)."""
-    url = item.assets["visual"].href
-    with rasterio.open(url) as ds:
-        # centre window
-        cx, cy = ds.width // 2, ds.height // 2
-        half = dst_window_px // 2
-        win = Window(cx - half, cy - half, dst_window_px, dst_window_px)
-        rgb = ds.read([1, 2, 3], window=win)  # (3, H, W) uint8
-        win_transform = ds.window_transform(win)
-        return rgb, win_transform, ds.crs
+    test_ids = stratified_split(source_ids, id_to_template=id_to_template)
+    payload = json.dumps({"seed": _SPLIT_SEED, "test_fraction": _TEST_FRACTION,
+                          "test": test_ids}, indent=2).encode()
+    fs.pipe_file(GCS_SPLIT, payload)
+    return set(test_ids)
 ```
-`[VERIFIED: STAC item S2B_54KYD_20260515_0_L2A returned `visual` asset = TCI 3-band COG, 2026-05-15]`
 
-### Pattern 3: IIIF Image Fetch with 4096 Max-Edge
-**What:** Build the IIIF URL as `<image_service>/full/!4096,4096/0/default.jpg`. The `!w,h`
-form is **size-best-fit**: server scales so neither dimension exceeds 4096 while preserving
-aspect ratio. Compute scale = 4096 / max(orig_w, orig_h), apply to all Allmaps GCPs before
-the affine fit.
-**When to use:** Every Allmaps-resolved historical map.
-**Example:**
+### Pattern 3: Manifest Validation (Hard-Fail)
+
 ```python
-# Source: https://iiif.io/api/image/3.0/ (size parameter, !w,h form)
-def build_iiif_url(image_service_id: str, max_edge: int = 4096) -> str:
-    base = image_service_id.rstrip("/")
-    # Rumsey image services are IIIF Image API 2.x; the !w,h form works identically.
-    # `default.jpg` = "server default quality, JPEG". 0 = no rotation.
-    return f"{base}/full/!{max_edge},{max_edge}/0/default.jpg"
+# Source: RW-02 naming contract from 02-CONTEXT.md
+import re, sys
 
-def scale_gcps(gcps_orig, orig_width, orig_height, fetched_width, fetched_height):
-    """Allmaps gives GCPs in original-image pixel space. After fetching at smaller size,
-    scale by the SAME factor in x and y (size-best-fit preserves aspect ratio)."""
-    sx = fetched_width / orig_width
-    sy = fetched_height / orig_height
-    scaled = [
-        ((px * sx, py * sy), (lng, lat))
-        for ((px, py), (lng, lat)) in gcps_orig
-    ]
-    return scaled
+_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*_[0-9]{2}\.geojson$")
+
+def validate_manifest(gcs_filenames: list[str], manifest: dict) -> dict[str, str]:
+    """Return id_to_template or sys.exit(1).
+
+    gcs_filenames: basenames from fs.ls(raw_prefix)
+    manifest: parsed manifest.json
+    """
+    errors = []
+    entries = manifest.get("entries", {})
+
+    for fn in gcs_filenames:
+        if not _FILENAME_RE.fullmatch(fn):
+            errors.append(f"  filename convention violation: {fn!r} does not match "
+                          f"<template>_<NN>.geojson")
+        if fn not in entries:
+            errors.append(f"  unlisted in manifest: {fn!r}")
+        else:
+            expected_tmpl = fn.rsplit("_", 1)[0]  # everything before _NN
+            actual_tmpl = entries[fn].get("template", "")
+            if actual_tmpl != expected_tmpl:
+                errors.append(f"  template mismatch: {fn!r} has template "
+                              f"{actual_tmpl!r}, expected {expected_tmpl!r}")
+
+    for fn in entries:
+        if fn not in gcs_filenames:
+            errors.append(f"  manifest entry missing from GCS raw/: {fn!r}")
+
+    if errors:
+        print("FATAL: manifest validation failed — aborting before split is computed (RW-02):")
+        for e in errors:
+            print(e)
+        sys.exit(1)
+
+    return {re.sub(r"[^\w-]", "_", fn[:-8]): entries[fn]["template"]
+            for fn in gcs_filenames}  # id_to_template
 ```
-**Note:** the Rumsey-Stanford IIIF image surface is IIIF Image API 2.x (judged from existing
-URLs like `https://www.davidrumsey.com/luna/servlet/iiif/RUMSEY~8~1~...`). The `!w,h` and
-`/full/.../0/default.jpg` syntax is **identical between IIIF 2.x and 3.x**, so we don't need
-to special-case versions. `[CITED: iiif.io/api/image/3.0 and iiif.io/api/image/2.1]`
-
-### Pattern 4: Affine GCP Fit with rasterio
-**What:** Use `rasterio.transform.from_gcps(gcps)` to get the 6-param affine. This calls
-GDAL's `GDALGCPsToGeoTransform` under the hood — least-squares fit. Returns an `Affine`
-object directly usable as the `transform` argument of `rasterio.open(..., 'w', ...)`.
-**When to use:** Every Allmaps-resolved historical map after GCPs are scaled.
-**Example:**
-```python
-# Source: https://rasterio.readthedocs.io/en/stable/api/rasterio.transform.html
-from rasterio.control import GroundControlPoint
-from rasterio.transform import from_gcps
-from rasterio.crs import CRS
-
-def gcps_to_affine(scaled_gcps):
-    """scaled_gcps: list of ((px, py), (lng, lat)).
-    GroundControlPoint takes (row=y, col=x, x=lng, y=lat) -- mind the convention."""
-    rasterio_gcps = [
-        GroundControlPoint(row=py, col=px, x=lng, y=lat)
-        for (px, py), (lng, lat) in scaled_gcps
-    ]
-    return from_gcps(rasterio_gcps)  # returns Affine
-
-def write_georeferenced_geotiff(rgb_array, affine, out_path):
-    """rgb_array: (3, H, W) uint8."""
-    h, w = rgb_array.shape[1:]
-    with rasterio.open(
-        out_path, "w",
-        driver="GTiff",
-        height=h, width=w,
-        count=3, dtype="uint8",
-        crs=CRS.from_epsg(4326),
-        transform=affine,
-    ) as ds:
-        ds.write(rgb_array)
-```
-`[CITED: rasterio docs, GDAL GDALGCPsToGeoTransform]`
-
-### Pattern 5: Class-Diversity Stratified Coverage (Pattern A from research question 3)
-
-**Recommendation: build a one-shot coarse global WorldCover summary and pick class-diverse
-cells from it.** This matches the stratified-sampling pattern used by every large-scale
-geospatial ML dataset (SatlasPretrain, Globe230k, the 1984-2020 global land cover training
-dataset). `[CITED: nature.com/articles/s41597-023-02798-5, satlas-pretrain.allen.ai]`
-
-**Implementation sketch:**
-1. **Coarse-WC summary (one-shot, cached)** — at ~1 km resolution, read all WorldCover tiles
-   (3°×3° each) and compute, per 1°×1° cell, the count of each canonical class. Persist as a
-   single sidecar GeoTIFF or compact JSON. Size estimate: ~36 MB at 1° resolution × 9 classes.
-2. **Region picker** — load the summary, rank 1° cells by class diversity (Shannon entropy
-   over the 9-class distribution, or a custom score that up-weights the three synthetic-absent
-   classes per `02-CONTEXT.md` D-14). Pick top-N cells with a seasonal datetime per cell.
-3. **STAC fetch per cell** — for each picked cell, STAC-search the lowest-cloud scene in the
-   chosen season, fetch the 4096-px window from the scene's `visual` asset.
-4. **Drop-count surfacing** — log per-cell drop reasons (`no_qualifying_scene`,
-   `stac_search_failed`, `fetch_failed`) per `02-CONTEXT.md` D-13 / D-05.
-
-**Alternative (Pattern B — biome-first):** would oversample forest/water because most of the
-Earth's land is forest/water. Reject. `[ASSUMED]`
 
 ### Anti-Patterns to Avoid
 
-- **Hitting `annotations.allmaps.org/?url=<manifest>` per LUNA result.** With the open-data
-  dump available (Pattern 1), this is 10,000× more API calls than needed and exposes the
-  pipeline to Allmaps rate-limit risk. Use the dump.
-- **Building the IIIF URL with `/full/full/`.** IIIF Image API 3.0 deprecates `full` as the
-  size parameter (still allowed for region). Use `!w,h` size syntax. `[VERIFIED: iiif.io/api/image/3.0]`
-- **Downloading the full Sentinel-2 scene (10980×10980 px, ~600 MB) when we only need a 4096-px
-  window.** Use `rasterio.windows.Window` with COG byte-range reads — GDAL VSI-CURL streams
-  only the requested bytes. Standard COG practice. `[CITED: GDAL COG driver docs]`
-- **Random-crop tiling at training time.** CONTEXT D-06 locks pre-tile-at-build-time. Don't
-  pull in torchgeo's `RandomGeoSampler` here.
-- **Stratifying the train/test split by anything other than whole-map ID.** CONTEXT D-15
-  prohibits adjacent-pyramid spatial leakage by construction; the split is at the *source map*
-  level, not the *pyramid* or *tile* level.
+- **Calling `load_or_create_split` before `validate_manifest`.** A mis-named file that passes
+  the collision guard but not the manifest check will skew the EVAL-01 stratified hold-out
+  permanently. The hard-fail order is mandatory.
+- **Using `UPath` or `universal_pathlib`.** Not installed, adds a dep, and the thin shim
+  achieves the same with zero new packages.
+- **Per-pyramid sequential writes without thread pool.** At 100 ms/write × 1.25M writes =
+  35 hours. Always parallelize at the pyramid-tile level.
+- **Passing `GCSFileSystem` into `tiling.tile()` as the `map_dir` parameter.** Reads of
+  `image.png`, `land_cover.png`, `topography.png`, `sample_weights.json` should stay local
+  Path-based. The build scripts stage these locally before calling `tile()`. Mixing GCS reads
+  into the tiler's read path adds unnecessary complexity.
+- **Reopening a gcsfs.GCSFileSystem per tile write.** Share a single `fs` instance across
+  the thread pool — re-authentication overhead is high. Instantiate once; pass to `_GCSWriter`.
+
+---
 
 ## Don't Hand-Roll
 
+> For the domain-unchanged items (affine fits, STAC queries, COG reads, WorldCover remapping)
+> see the prior 2026-05-15 research.
+
 | Problem | Don't Build | Use Instead | Why |
 |---------|-------------|-------------|-----|
-| Affine least-squares from N GCPs | numpy lstsq over the 6-param equation system | `rasterio.transform.from_gcps` | GDAL's `GDALGCPsToGeoTransform` is the canonical fit; battle-tested; one function call |
-| STAC query construction | `requests.post(url, json={'collections': [...], 'query': {...}})` | `pystac_client.Client.open(...).search(...)` | Handles pagination, gives an iterator, dict-style query syntax matches the docs |
-| COG byte-range reads over HTTP | manual HTTP `Range` header logic | `rasterio.open(url).read(window=Window(...))` | GDAL VSI-CURL transparently handles range requests for COG — already proven in existing `worldcover.py` |
-| WorldCover class remapping | hard-coded `if/elif` chains | EXISTING `WC_REMAP` dict in `historical/worldcover.py` | Already locked, used by historical pipeline, reuse verbatim for satellite |
-| Slope from DEM | reproject + manual `np.gradient` | EXISTING `historical/dem.py:fetch_topo` | Already does the LAEA-projection trick correctly |
-| 1° / 3° tile origin enumeration | reimplemented `math.floor` loops | EXISTING `_tile_origins` in `worldcover.py` and `_tile_urls` in `dem.py` | Already correct and tested |
-| IIIF manifest parsing | custom JSON walk for label/canvas/source | continue with the pattern in `historical/allmaps.py:_parse_annotation` | The annotation shape is locked by W3C / IIIF Image API; just keep it |
-| Anonymous S3 to public buckets | boto3 + signed-request hackery | `os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")` + GDAL VSI-CURL | EXISTING pattern, works for `esa-worldcover`, `copernicus-dem-30m`, and `sentinel-cogs` identically |
+| GCS object write | boto3 or requests with signed URLs | `gcsfs.GCSFileSystem.pipe_file(path, bytes)` | ADC auth already established; same pattern as gcs_checkpoint.py; atomic PUT |
+| GCS bulk download | manual fs.ls + per-file download loop | `fs.get(remote_prefix, local_dir, recursive=True)` | Single call; handles directory structure; idempotent |
+| Split.json GCS I/O | hand-coded requests with GCS JSON API | `fs.exists(path)` + `fs.cat(path)` + `fs.pipe_file(path, bytes)` | Three-line pattern; consistent with checkpoint module |
+| GCS directory listing | glob or recursive walk | `fs.ls(bare_prefix)` + filter by suffix | gcsfs mirrors the pattern in gcs_checkpoint.py line 174–177 |
+| File-object for Pillow | manually build a BytesIO bridge | `fs.open(path, 'wb')` as the PIL.Image.save target | GCSFile implements the full seekable/writable buffer protocol |
 
-**Key insight:** the satellite-source pipeline reuses ~90% of the historical pipeline's
-infrastructure. The new code is one STAC client + one coverage-scan module + one Sentinel-2
-fetch — everything else (label generation, anonymous S3 access, per-map output schema) is
-shared with `historical/`.
+---
 
-## Runtime State Inventory
+## Common Pitfalls (REWORK additions)
 
-*Phase 2 is greenfield with one rename consideration (the optional renaming of
-`build_dataset.py` → `build_synthetic_dataset.py` for symmetry). Sections marked "None — N/A":*
+### Pitfall R-1: Silent Local-Only Writes (the root cause of this rework)
+**What goes wrong:** A build script runs successfully but writes to `Path("data/synthetic/...")`
+instead of `gs://…`. Outputs look correct locally; nothing lands in GCS. Next ephemeral box
+finds an empty bucket.
+**Why it happens:** The default argument `--out-dir data/synthetic` is still a local path.
+The script completes without error.
+**How to avoid:** Change every `--out-dir`, `--raw-dir`, and `--manifest` default to a `gs://`
+URI. Add a startup assertion: if `out_dir` does not start with `gs://`, print a warning and
+require `--local-ok` to override (useful for tests). Never accept a silent local fallback.
+**Warning signs:** `fs.ls(gs://…/data/synthetic/)` returns empty after build completes.
 
-| Category | Items Found | Action Required |
-|----------|-------------|------------------|
-| Stored data | None — `data/` is currently empty save for the `data/toons/` Phase-1 training set. No databases involved. | None |
-| Live service config | None — Phase 2 is offline scripts only. | None |
-| OS-registered state | None — no scheduled tasks, no daemons. | None |
-| Secrets / env vars | Only `AWS_NO_SIGN_REQUEST=YES` (set via `os.environ.setdefault`, no secret value). | None — keep existing pattern |
-| Build artifacts | None — Python-only, no installed package. The historical/ subpackage is an in-repo import. | None |
+### Pitfall R-2: Partial/Aborted GCS Uploads Mid-Pyramid
+**What goes wrong:** The build process is preempted or killed mid-pyramid. Some tiles for
+a pyramid are in GCS; others are not. The next run finds the pyramid directory exists (via
+`fs.exists`) and skips it — resulting in a corrupt incomplete pyramid.
+**Why it happens:** Naive "skip if exists" logic at the pyramid level.
+**How to avoid:** The collision guard in `build_dataset.py` checks `_REQUIRED_MAP_FILES`
+before calling `tiling.tile()`. For GCS, the equivalent pre-write check is: if
+`gs://…/<map_id>/<style>/pyramids/` exists AND contains the expected number of pyramid
+subdirs AND the first pyramid's `pyramid.json` exists — then skip; else delete and rebuild.
+Alternatively, write a `_BUILD_COMPLETE` sentinel object as the LAST write of a map-dir;
+presence of this sentinel = safe to skip; its absence = rebuild from scratch.
+**Warning signs:** `pytest tests/test_gcs_builds.py::test_pyramid_completeness` fails on a
+partially-uploaded map.
 
-**If `build_dataset.py` is renamed:** the only consumer is the README's section-2 prose; no
-import dependencies (only `__main__` execution). Safe rename.
+### Pitfall R-3: `split.json` Frozen on an Incomplete Raw Set
+**What goes wrong:** User uploads 30 GeoJSON files, runs build, split.json is frozen with 30
+sources. User uploads 70 more files. Subsequent build runs read the frozen split, which was
+computed on only 30 sources — the 70 new sources all go to `train/` without proportional test
+representation. EVAL-01 hold-out is statistically weak.
+**Why it happens:** `load_or_create_split` (D-18) deliberately never recomputes once frozen.
+**How to avoid:** The RW-02 manifest hard-fail mitigates this partially — the manifest must
+list ALL uploaded files at validation time. Document clearly: `split.json` must be deleted
+from GCS to trigger a recompute. Add a `--refreeze-split` flag that deletes the existing
+`split.json` from GCS and recomputes. Make this an explicit user action, not automatic.
+**Warning signs:** `len(test_ids) / len(all_source_ids)` << 0.15 after a build with more
+sources than the frozen split was computed on.
 
-## Common Pitfalls
+### Pitfall R-4: Manifest Mismatch Not Hard-Failing
+**What goes wrong:** `validate_manifest` prints a warning instead of `sys.exit(1)`. Build
+continues; a mis-named source with no manifest entry gets assigned to a stratum via
+`template_key()` fallback — possibly the wrong stratum. EVAL-01 hold-out is silently skewed.
+**How to avoid:** `validate_manifest` must call `sys.exit(1)` (not `raise ValueError`, not
+`print("WARNING")`). The function has no legitimate "partial pass" state — it either passes
+completely or the build must not proceed.
 
-### Pitfall 1: GCP coordinate convention mismatch
-**What goes wrong:** `rasterio.control.GroundControlPoint` takes `(row=y, col=x, x=lng, y=lat)`.
-Allmaps gives `((x_px, y_px), (lng, lat))`. Mistakenly passing `row=px_x, col=px_y` will flip
-the image.
-**Why it happens:** rasterio's `row, col` matches numpy's `(H, W)` axis order — image y-axis
-first. Allmaps follows IIIF convention — image x-axis first.
-**How to avoid:** wrap GCP construction in a single helper (Pattern 4 example does this
-explicitly with named keyword args).
-**Warning signs:** the resulting GeoTIFF has the WorldCover overlay at the wrong pixel
-location — the labels and the map are off by a non-trivial transform.
+### Pitfall R-5: Pull-Once Verification False-Passing
+**What goes wrong:** `verify_pull` checks only that directories exist, not that they contain
+complete pyramids. A partially-downloaded set passes verification. Training begins on
+truncated data; loss is anomalously high but looks like a model issue.
+**How to avoid:** The spot-check (10% of pyramid dirs, file count ≥ 60) catches gross
+truncation. For edge cases: the training DataLoader's `pyramid.json` parse will fail loudly on
+any truncated pyramid, surfacing the error immediately (not silently).
+**Warning signs:** Epoch 1 val loss is unexpectedly high compared to the probe probe-mode
+baseline; some pyramid dirs contain fewer than 65 files.
 
-### Pitfall 2: IIIF `!w,h` is best-fit, NOT exact
-**What goes wrong:** Asking for `!4096,4096` on a 6000×3000 image returns a 4096×2048
-image (preserves aspect ratio, neither dimension exceeds 4096). Code that assumes both
-dimensions equal 4096 will compute the wrong scale factor.
-**Why it happens:** IIIF `!w,h` means "fit within this box," not "exact dimensions."
-**How to avoid:** after fetching, read the actual returned image dimensions; compute scale
-as `fetched_max_edge / original_max_edge` and apply identically to both GCP axes
-(size-best-fit preserves the aspect ratio so scale_x == scale_y).
-**Warning signs:** GCPs are off by a consistent multiplicative factor along one axis only.
+---
 
-### Pitfall 3: Allmaps multi-canvas atlases vs single-map manifests
-**What goes wrong:** A Rumsey "atlas" manifest contains many canvases (one per plate). Each
-canvas may have its own Allmaps georeferencing. The current `historical/allmaps.py:lookup`
-returns the **first** annotation only. For atlases with N georeferenced plates, this drops
-N-1 plates silently.
-**Why it happens:** `items[0]` shortcut in `lookup()` is documented as "the canonical /
-latest one" but for atlases it's "plate 1 of N" instead.
-**How to avoid:** when more than one item is returned, the planner should decide: either
-loop over all of them (each becomes a separate map in `data/historical/raw/`), or reject the
-manifest as "out-of-scope" because we want single-plate regional maps not multi-plate atlases.
-**Warning signs:** the 10,455 / 337 Rumsey-canvas / Rumsey-manifest ratio in the Allmaps dump
-shows atlases ARE the norm — average 31 canvases per manifest. The pipeline will under-yield
-by 30× if it stops at items[0].
+## Validation Architecture
 
-### Pitfall 4: Sentinel-2 datetime + cloud-cover combinatorics
-**What goes wrong:** Hardcoding a single datetime range (e.g. "2024-06-01 to 2024-09-30")
-across all picked regions will miss low-cloud scenes for tropical regions whose dry season
-is winter and Southern Hemisphere regions whose summer is December.
-**Why it happens:** "low cloud cover" is region-and-season dependent. A single global
-datetime is the wrong abstraction.
-**How to avoid:** per-region picker should select an appropriate season per latitude band
-(rough rule: pick Northern-summer May-Sep for northern temperate, Southern-summer Nov-Mar
-for southern temperate, dry season per Köppen zone for tropics). Or: just search the past
-12 months and let `eo:cloud_cover < 10` do the filtering. Simpler.
-**Warning signs:** `drop_count[no_qualifying_scene]` is high (> 10% of picked regions).
+> Focus: rework-introduced failure modes. The unchanged-domain tests (tiler geometry, split
+> determinism, Allmaps/STAC) are documented in the 2026-05-15 research. Add the tests below
+> to the existing Wave 0 gap list.
 
-### Pitfall 5: Topography label width inheritance from historical map
-**What goes wrong:** `historical/dem.py:fetch_topo` projects DEM into the *target map_ds* grid.
-For a 4096-px IIIF-fetched map at 100 km diagonal extent, the per-pixel DEM resolution is
-~25 m — close to GLO-30's native 30 m, fine. For a 2000-km map at the same 4096 px, per-pixel
-resolution is ~500 m — slope from such coarsely-sampled DEM under-reports gradients (because
-gradient magnitude scales inversely with pixel size).
-**Why it happens:** the `_slope_degrees` function uses `np.gradient(dem, res_m, res_m)` where
-`res_m = abs(metric_transform.a)`. Coarse `res_m` flattens slopes.
-**How to avoid:** compute slope *at DEM native resolution* (30 m), classify, then downsample
-the classified topo into the map_ds grid with `Resampling.mode`. The existing code partially
-does this (computes slope in a metric CRS intermediate at target dims), but the intermediate
-is at MAP resolution, not DEM resolution.
-**Warning signs:** large-extent historical maps (1500-2000 km diagonal) show all-flat
-topography even where mountains are visually present.
-**Triage:** this is a known limitation of the existing `dem.py`; the planner should surface it
-as a follow-up task ("Phase 2 tightening") but **does NOT need to block Phase 2 on it** — the
-class-conditional loss weight for topography is `1.0`, so any per-pixel error here costs
-training accuracy proportionally. Confirm with user during planning.
+### Test Framework (unchanged from prior research)
+| Property | Value |
+|----------|-------|
+| Framework | pytest >= 8 (to be installed in Wave 0) |
+| Config file | none — see Wave 0 |
+| Quick run command | `pytest tests/ -x --ignore=tests/integration` |
+| Full suite command | `pytest tests/` |
 
-### Pitfall 6: Per-map directory output schema drift
-**What goes wrong:** The synthetic pipeline currently writes `flat.png`/`illustrated.png`/
-`satellite.png` as the image variants — *three different rendering styles per source map*.
-But the per-map output schema locked by CONTEXT requires a single `image.png`.
-**Why it happens:** `scripts/render.py` and `scripts/build_dataset.py` were written before the
-schema was canonicalised.
-**How to avoid:** either (a) treat each style as a separate "map" with its own `image.png` —
-multiplies synthetic sample count by 3, may bloat dataset; or (b) pick one canonical style per
-Azgaar source map (probably `illustrated`) and write that as `image.png` — keeps sample count
-modest, loses style augmentation diversity.
-**Recommendation:** **option (a)** — treat each (Azgaar source, style) pair as its own map,
-share the same `land_cover.png`/`topography.png` across styles, use directory naming
-`<azgaar_id>__<style>/`. This way the held-out test split (whole-Azgaar-source-map) still
-guarantees zero spatial leakage but training sees 3× the visual diversity. Surface this for
-user approval in plan-01.
+### Rework Requirements → Test Map
 
-## Code Examples
+| Req ID | Behavior | Test Type | Automated Command | File Exists? |
+|--------|----------|-----------|-------------------|-------------|
+| RW-01 | `_GCSWriter` writes bytes to a mock fsspec local filesystem correctly | unit | `pytest tests/test_gcs_io.py::test_gcs_writer_writes_bytes -x` | ❌ Wave 0 |
+| RW-01 | `tiling.tile(map_dir, out_root=_GCSWriter(..., local_fs))` produces correct pyramid structure on a fixture map | integration (offline) | `pytest tests/test_tiling.py::test_tile_to_gcs_writer -x` | ❌ Wave 0 |
+| RW-01 | `_GCSWriter` opened in 'wb' mode accepts Pillow `.save(fh, format='PNG')` | unit | `pytest tests/test_gcs_io.py::test_gcs_writer_pillow_compat -x` | ❌ Wave 0 |
+| RW-01b | Thread-pool tile writes do not corrupt pyramid (concurrent write test) | unit | `pytest tests/test_gcs_io.py::test_concurrent_tile_writes -x` | ❌ Wave 0 |
+| RW-02 | `validate_manifest` exits 1 on: unlisted file, phantom entry, regex mismatch, template mismatch | unit | `pytest tests/test_manifest.py::test_validate_manifest_hard_fails -x` | ❌ Wave 0 |
+| RW-02 | `validate_manifest` must run BEFORE `load_or_create_split` in `build` flow | integration | `pytest tests/test_build_dataset.py::test_manifest_fails_before_split -x` | ❌ Wave 0 |
+| RW-02 | `stratified_split` uses manifest template, not `template_key()`, for grouping | unit | `pytest tests/test_build_dataset.py::test_split_uses_manifest_template -x` | ❌ Wave 0 |
+| RW-03 | `pull_dataset_from_gcs` is idempotent (second call does not fail or corrupt) | unit (mock fs) | `pytest tests/test_gcs_io.py::test_pull_idempotent -x` | ❌ Wave 0 |
+| RW-03 | `verify_pull` raises on missing map_id directory | unit | `pytest tests/test_gcs_io.py::test_verify_raises_on_missing_map -x` | ❌ Wave 0 |
+| RW-03 | `verify_pull` raises on truncated pyramid (< 60 files in spot-check) | unit | `pytest tests/test_gcs_io.py::test_verify_raises_on_truncated_pyramid -x` | ❌ Wave 0 |
+| EVAL-01 | `split.json` written to GCS; re-run does not recompute (frozen) | integration (mock GCS) | `pytest tests/test_build_dataset.py::test_split_frozen_in_gcs -x` | ❌ Wave 0 |
+| RW-04 | `build_historical_dataset.py` writes `unregistered_manifest.json` to GCS path, not local | integration (mock GCS) | `pytest tests/test_historical.py::test_manifest_written_to_gcs -x` | ❌ Wave 0 |
 
-(Already given in Patterns 1-5 above. Cross-reference rather than duplicate here.)
+### Observability Points (Nyquist sampling for rework failure modes)
 
-## State of the Art
+| Failure Mode | Detection Point | How to Detect |
+|-------------|----------------|---------------|
+| Silent local-only write | Post-build GCS ls | Assert `fs.ls(gs://…/data/synthetic/train/)` non-empty immediately after build |
+| Partial upload mid-pyramid | Pre-train verification | `verify_pull` spot-checks pyramid file count |
+| Split frozen on incomplete raw | Manifest validation | RW-02 hard-fail prevents unknown files; `--refreeze-split` is the deliberate escape hatch |
+| Manifest mismatch not hard-failing | Build test suite | `test_manifest_fails_before_split` confirms ordering |
+| Pull-once false-pass | Training loss spike | Epoch-1 val loss compared to probe baseline; pyramid.json parse errors in DataLoader |
 
-| Old Approach | Current Approach | When Changed | Impact |
-|--------------|------------------|--------------|--------|
-| Georeferencer.com WMS download | Allmaps Web-Annotation index | Allmaps reached production maturity, ~2023 | Phase 2 D-01 — delete WMS code path entirely |
-| WMS bounding-box-in-metadata | Allmaps GCPs + per-map affine fit | Same as above | Phase 2 D-03 — `rasterio.transform.from_gcps` |
-| Fetching three Sentinel-2 bands and stacking | Use Element84's `visual` TCI asset (pre-stacked) | earth-search v1 added TCI 2023 | Reduces our STAC + COG code from 3 fetches+1 stack to 1 fetch |
-| Polling `annotations.allmaps.org` per manifest | Offline `maps.geojsonl` dump from `files.allmaps.org` | Allmaps open-data dump introduced ~2024 | Order-of-magnitude API reduction; no Allmaps rate-limit risk |
-| Random-crop tiling at training time | Pre-tile at build time, materialise to disk | CONTEXT D-06 / D-07 lock this | Allows the nested-pyramid 1+4+16 geometry to be inspectable on disk |
+### Wave 0 Gaps (additions to prior 2026-05-15 list)
 
-**Deprecated / outdated:**
-- IIIF Image API 3.0 deprecates `full` as the **size** parameter (still valid as the
-  **region** parameter). Use `max` or `!w,h`. `[VERIFIED: iiif.io/api/image/3.0]`
-- The `sentinel-2-c1-l2a` collection name appeared in some 2024 docs — the current canonical
-  name on earth-search v1 is `sentinel-2-l2a`. `[VERIFIED: live STAC query 2026-05-15]`
+- [ ] `tests/test_gcs_io.py` — `_GCSWriter` unit tests (write_bytes, write_text, open, Pillow compat, concurrent, idempotent pull)
+- [ ] `tests/test_manifest.py` — `validate_manifest` hard-fail coverage (all four error cases)
+- [ ] `scripts/gcs_io.py` — `_GCSWriter`, `pull_dataset_from_gcs`, `verify_pull` (the implementation itself)
+- [ ] Add `--scratch-dir` arg to `finetune_seg.py` and `evaluate_seg.py`
+- [ ] Add `--refreeze-split` flag to `build_dataset.py`
+
+---
 
 ## Assumptions Log
 
-> Every claim tagged `[ASSUMED]` above is listed here for user confirmation.
-
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
-| A1 | The IIIF 2.x vs 3.0 size syntax `!w,h` works identically on the Rumsey IIIF surface | Pattern 3 | LOW — fallback is to query the `/info.json` for the service profile and adapt; one extra HTTP per map |
-| A2 | The "biome-first" alternative to class-diversity sampling oversamples forest/water and is wrong | Pattern 5 | LOW — easy to validate empirically at coverage-scan time |
-| A3 | Slope-from-coarse-DEM is a known limitation but not a Phase 2 blocker | Pitfall 5 | MEDIUM — if topography is critically wrong for large-extent historical maps, the topography head will train poorly. **Recommend surfacing this for user approval as part of plan-01.** |
-| A4 | Synthetic per-map = (Azgaar source × style) is the right multiplexing | Pitfall 6 | MEDIUM — affects training data volume by 3×. **Needs user approval in plan-01.** |
-| A5 | Standard `pystac-client` over raw `requests` to the STAC API is the right call | Stack alternatives | LOW — easy to switch; both work |
-| A6 | The Allmaps `lookup()` should be extended to return ALL annotations, not items[0] | Pitfall 3 | HIGH — currently silently drops most plates of atlases. **Plan-01 should fix.** |
-| A7 | Synthetic dataset target size — **RESOLVED with user 2026-05-15: N=100 Azgaar source maps for v1** (~15–16 maps/template across ~12 templates → robust stratified 15% hold-out). Build may revise up. | Synthetic sizing (research Q8) | RESOLVED — user-confirmed N=100 |
+| A-R1 | GCS class A op cost is $0.05/10,000 ops for `us-east1` / `northamerica-northeast1` standard storage | RW-01b | LOW — if rate is different, the ~$6 estimate shifts proportionally; order of magnitude remains correct |
+| A-R2 | Same-region Compute Engine → GCS PUT latency is ~100 ms for 50–200 KB objects | RW-01b | MEDIUM — if latency is 200 ms, 32 threads gives ~2 hours instead of 65 minutes; still acceptable |
+| A-R3 | GCS bucket write quota is 1,000 req/s (default); 32 threads at 10 req/s each = 320 req/s stays under quota | RW-01b | LOW — GCS may impose lower bucket-level limits for the project; if rate-limited, reduce `max_workers` |
+| A-R4 | `gcsfs.GCSFileSystem` is thread-safe for concurrent `pipe_file()` calls across threads | RW-01 Pattern 1 | LOW — gcsfs is async-backed and the sync wrapper acquires per-call event loops; concurrent calls from separate threads are standard usage per gcsfs docs |
+| A-R5 | Raw Rumsey GeoTIFFs (IIIF downloads) are re-downloadable on each job run and do not need to be GCS-canonical | RW-04 | MEDIUM — if a future Rumsey/Allmaps API change makes re-download unreliable, raw TIFs should be uploaded to GCS raw/. Flag for user awareness. |
 
-**A6 is particularly load-bearing** — without it, the historical pipeline yields ~337 maps
-instead of ~10,455. Surface to user as part of plan-01.
+---
 
-## Open Questions (RESOLVED)
+## Open Questions (none blocking planning)
 
-> Dispositions recorded 2026-05-15 during `/gsd-plan-phase 2`. Q1–Q3 resolve as
-> decide-at-execution / Claude's-discretion (legitimately not blocking). Q4 and Q5
-> were surfaced to the user and confirmed.
+1. **Should the build add a `_BUILD_COMPLETE` sentinel to each map-dir in GCS?**
+   - What we know: partial pyramid uploads are a preemption risk; there is no atomic
+     directory-level commit in GCS.
+   - What's unclear: whether the user wants this protection or prefers manual cleanup.
+   - Recommendation: add the sentinel as a cheap safeguard; document it in the plan.
+   - **Not blocking planning — planner should include this as an optional task.**
 
-1. **How many Allmaps-georeferenced Rumsey maps fall in the 1500-1700 LUNA-Type=Map subset?**
-   - **RESOLVED: decide-at-execution.** Empirically discoverable; the D-05 drop-count
-     instrumentation (plan 02-02) surfaces this on the first run. Not a planning blocker.
-   - What we know: 10,455 Rumsey canvases in Allmaps; LUNA can filter by year/type.
-   - What's unclear: the *intersection* — Allmaps doesn't surface LUNA's date metadata in
-     the dump; LUNA doesn't surface Allmaps coverage.
-   - Recommendation: this is *empirically discoverable during plan execution* — run
-     `rumsey.search_maps(date_start=1500, date_end=1700)` (already implemented), intersect
-     with the offline dump's manifest URL set, count. **The drop-count instrumentation in
-     D-05 will surface this naturally on the first run.** Don't pre-compute; let the
-     pipeline tell us.
+2. **Should the pull-once fetch all three families (synthetic + historical + satellite) or
+   only the synthetic family?**
+   - What we know: `finetune_seg.py` / `evaluate_seg.py` train on the MERGED dataset across
+     all three families (same `train/` root after RW-04 reorganization).
+   - What's unclear: whether all three families share a single GCS `data/train/` root or
+     separate per-family roots with a merged local scratch.
+   - Recommendation: planner should clarify the merged-vs-family-rooted layout in 02-05.
+   - **Not blocking — planner resolves this in the finetune/evaluate plan.**
 
-2. **Should the Sentinel-2 satellite source use the `visual` TCI asset or fetch B04/B03/B02
-   separately?**
-   - What we know: `visual` is a pre-stacked TCI COG, uint8, 3-band, native 10 m resolution,
-     standard Sentinel-2 colour-balanced product.
-   - What's unclear: whether the colour-balancing applied by the TCI processor introduces
-     a domain-gap from raw reflectance that affects training. For our use case (illustrated
-     map segmentation), TCI is arguably *closer to what an illustrator would paint*, so the
-     gap might actually help.
-   - Recommendation: use `visual` for v1. Reserve "switch to band-stacked B04/B03/B02 if
-     training surfaces a saturation/clipping issue" as a follow-up.
-   - **RESOLVED: Claude's discretion → `visual` TCI for v1** (band-stack switch is a
-     documented follow-up, not a Phase 2 blocker). Baked into plan 02-04.
-
-3. **Should the multi-scale pyramid be stored as per-pyramid subdirectories, flat naming, or
-   a sqlite index?**
-   - What we know: CONTEXT D-Storage marks this as Claude's discretion.
-   - What's unclear: Phase 3's DataLoader access pattern (sequential? random with replacement?
-     parent-aware mini-batching for coarse-to-fine?).
-   - Recommendation: **per-pyramid subdirectories with a single `pyramid.json` per subdir
-     listing the 21 file paths and parent→child indices.** Filesystem-native, easy to debug,
-     easy to delete a broken pyramid, easy to ship via a tar/rsync. Add a single top-level
-     `index.parquet` if the DataLoader needs O(1) lookup; that's a Phase 3 concern.
-   - **RESOLVED: Claude's discretion (CONTEXT D-Storage)** → per-pyramid subdirectories
-     with one `pyramid.json` per subdir. Baked into plan 02-05.
-
-4. **Should `historical/allmaps.py:lookup()` return ALL items or just items[0]?**
-   - See Pitfall 3 / Assumption A6.
-   - **RESOLVED with user 2026-05-15: return ALL annotations** (A6 approved). Baked into
-     plan 02-01. Expected historical yield ~10,455 (not ~337).
-
-5. **What's the synthetic dataset target size?**
-   - SPEC and CONTEXT are silent. Phase-1 fine-tune used ~4760 augmented samples from 120
-     base tiles. For Phase 2 segmentation training (a much harder task), reasonable target
-     is at least 50-100 Azgaar source maps × 3 styles × ~1344 pyramid tiles = 200-400k tiles.
-   - **RESOLVED with user 2026-05-15: N=100 Azgaar source maps for v1** (A7). This yields
-     ~15–16 maps per template across ~12 templates — a robust stratified 15% hold-out for
-     EVAL-01. The split logic is correct at any N; N is tunable up during execution
-     without re-opening this question. Baked into plan 02-03.
+---
 
 ## Environment Availability
 
 | Dependency | Required By | Available | Version | Fallback |
 |------------|------------|-----------|---------|----------|
-| Python 3 | All scripts | ✓ | 3.13+ inferred from `bool` ↔ `is_integer()` use | — |
-| `rasterio` | All georeferenced paths | ✓ | 1.5.0 (latest on pypi) | none required |
-| `pyproj` | DEM LAEA reprojection | ✓ | 3.7.2 | none required |
-| `Pillow` | Image I/O | ✓ | 12.2.0 | none required |
-| `numpy` | Array math | ✓ | 2.4.4 | none required |
-| `requests` | LUNA, Allmaps, IIIF | ✓ | listed in requirements.txt | none required |
-| `pystac-client` | Sentinel-2 STAC search | **MISSING** (not in `requirements.txt`) | needs `pystac-client>=0.9` | raw `requests` against the STAC API works but loses query helpers |
-| GDAL (via rasterio) | All raster ops | ✓ (bundled with rasterio wheel) | bundled | — |
-| Network access to `*.s3.amazonaws.com` | Anonymous public-bucket reads | ✓ | — | — |
-| Network access to `*.davidrumsey.com` | LUNA search, IIIF image fetch | ✓ (assumed) | — | — |
-| Network access to `annotations.allmaps.org`, `files.allmaps.org` | Allmaps lookup, offline dump | ✓ (verified 2026-05-15) | — | — |
-| Network access to `earth-search.aws.element84.com` | Sentinel-2 STAC | ✓ (assumed standard internet) | — | — |
-| Disk for `data/historical/raw/` GeoTIFFs | Historical pipeline | varies by `--max-maps` | ~5-15 MB per IIIF image at 4096 px | reduce `max-maps` |
-| Disk for `data/synthetic/{train,test}/` | Synthetic pipeline | varies | small (a synthetic Azgaar map is < 5 MB) | — |
-| Disk for `data/satellite/` | Satellite pipeline | varies | ~50 MB per 4096-px window × N regions | reduce regions |
-| Disk for Allmaps dump cache | Historical pipeline acceleration | 176 MB one-shot | — | none required |
+| gcsfs | All GCS I/O | ✓ | 2026.5.0 | — |
+| fsspec | Testing (local fs abstraction) | ✓ | 2026.3.0 | — |
+| GCS ADC credentials | Build + train scripts | ✓ (planning VM) | — | GPU host requires `gcloud auth application-default login` or service account |
+| `gs://mapclass-training-northeast1/` bucket | All GCS writes | ✓ (assumed — existing checkpoint writes work) | — | — |
 
-**Missing dependencies with no fallback:** none — `pystac-client` has a working raw-requests fallback.
+**Missing dependencies with no fallback:** none
 
-**Missing dependencies with fallback:**
-- `pystac-client` — install recommended; raw `requests` works.
+**Note on ADC on fresh boxes:** the GPU training host must have ADC configured before running
+any GCS I/O. This is the same requirement as the existing `gcs_checkpoint.py` — no new auth
+requirement introduced by this rework. The planner should include `gcloud auth
+application-default login` as a pre-condition note in the GPU-host gate (04-HUMAN-UAT.md
+pattern).
 
-## Validation Architecture
+---
 
-(Per `.planning/config.json`: nyquist_validation key is absent, so include this section.)
+## Unchanged-Domain References
 
-### Test Framework
-| Property | Value |
-|----------|-------|
-| Framework | **None currently** — no `tests/` directory, no test files, no pytest config detected `[VERIFIED: ls scripts/]` |
-| Config file | none — see Wave 0 |
-| Quick run command | TBD (Wave 0 creates the framework) |
-| Full suite command | TBD |
+The following Phase 2 research areas are covered in the prior 2026-05-15 `02-RESEARCH.md`
+and are NOT reproduced here. The planner MUST still read those sections for the full picture:
 
-### Phase Requirements → Test Map
-| Req ID | Behavior | Test Type | Automated Command | File Exists? |
-|--------|----------|-----------|-------------------|-------------|
-| PHASE-02 (historical) | LUNA search returns N ≥ 1 result for 1500-1700 query | integration (online) | `pytest tests/test_rumsey.py::test_search_returns_results -x` | ❌ Wave 0 |
-| PHASE-02 (historical) | Allmaps lookup returns GCPs for a known-georeferenced Rumsey manifest | integration (online) | `pytest tests/test_allmaps.py::test_known_rumsey_manifest_has_gcps -x` | ❌ Wave 0 |
-| PHASE-02 (historical) | IIIF fetch at `!4096,4096` returns ≤ 4096 in both dimensions | integration (online) | `pytest tests/test_iiif.py::test_max_edge_fetch -x` | ❌ Wave 0 |
-| PHASE-02 (historical) | GCP affine fit + GeoTIFF write round-trips: read CRS=4326 and `transform` survives | unit | `pytest tests/test_georef.py::test_affine_roundtrip -x` | ❌ Wave 0 |
-| PHASE-02 (historical) | `make_labels()` produces all 4 output files for a tiny synthetic 256-px GeoTIFF | integration (offline, fixture-based) | `pytest tests/test_label.py::test_make_labels_writes_all_outputs -x` | ❌ Wave 0 |
-| PHASE-02 (synthetic) | `render_map` produces matching `land_cover.png` and `topography.png` dimensions | unit | `pytest tests/test_render.py::test_output_dimensions_match -x` | ❌ Wave 0 |
-| PHASE-02 (synthetic) | The seeded train/test split is deterministic across re-invocations | unit | `pytest tests/test_split.py::test_seeded_split_deterministic -x` | ❌ Wave 0 |
-| PHASE-02 (satellite) | STAC search returns at least one item for a bbox with known coverage and cloud<10 | integration (online) | `pytest tests/test_stac.py::test_known_bbox_returns_results -x` | ❌ Wave 0 |
-| PHASE-02 (satellite) | COG byte-range window read returns shape (3, 4096, 4096) for `visual` asset | integration (online) | `pytest tests/test_satellite.py::test_window_fetch_shape -x` | ❌ Wave 0 |
-| PHASE-02 (tiler) | 1×896 + 4×448 + 16×224 nested pyramid: child tiles' aggregated extent equals parent's | unit | `pytest tests/test_tiling.py::test_nested_alignment -x` | ❌ Wave 0 |
-| PHASE-02 (tiler) | Edge-policy: pyramid >50% off the source map is dropped | unit | `pytest tests/test_tiling.py::test_edge_drop -x` | ❌ Wave 0 |
-| EVAL-01 | After build, `data/synthetic/test/` contains map IDs from `split.json` and `train/` contains the rest, **with NO intersection** | integration | `pytest tests/test_split.py::test_no_train_test_intersection -x` | ❌ Wave 0 |
-| EVAL-01 | `split.json` is frozen — re-running build does not change the test-set ID list | integration | `pytest tests/test_split.py::test_split_manifest_frozen -x` | ❌ Wave 0 |
+- Allmaps offline dump + IIIF fetch pattern (Patterns 1, 3 in prior research)
+- STAC cloud-filtered Sentinel-2 search (Pattern 2)
+- Affine GCP fit with rasterio (Pattern 4)
+- Class-diversity stratified coverage scan (Pattern 5)
+- Anti-patterns for IIIF, STAC, tiler geometry
+- Don't-hand-roll table (affine LSQ, STAC queries, COG byte-range reads, WorldCover remapping)
+- Pitfalls 1–6 (GCP convention, IIIF best-fit, Allmaps atlases, S2 cloud cover, DEM resolution, per-map schema)
+- Full environment availability table (rasterio, pyproj, Pillow, numpy, pystac-client)
+- Security domain analysis
 
-### Sampling Rate
-- **Per task commit:** `pytest tests/ -x --ignore=tests/integration` (unit tests only, < 30s)
-- **Per wave merge:** `pytest tests/` (all unit + offline integration, < 5min)
-- **Phase gate:** full suite (incl. online integration tests) green before `/gsd-verify-work`
-
-### Wave 0 Gaps
-- [ ] `tests/conftest.py` — shared fixtures (sample LUNA item, sample Allmaps annotation,
-      tiny 256-px GeoTIFF, sample Azgaar GeoJSON, mocked-STAC item)
-- [ ] `tests/test_rumsey.py` — LUNA search + filter behaviour
-- [ ] `tests/test_allmaps.py` — Allmaps lookup + offline-dump intersection
-- [ ] `tests/test_iiif.py` — IIIF size syntax + scale-factor logic
-- [ ] `tests/test_georef.py` — affine fit + GeoTIFF I/O
-- [ ] `tests/test_label.py` — `make_labels` end-to-end on a fixture
-- [ ] `tests/test_render.py` — synthetic render dimensions
-- [ ] `tests/test_split.py` — train/test deterministic split + frozen manifest
-- [ ] `tests/test_stac.py` — STAC client wrapper
-- [ ] `tests/test_satellite.py` — satellite fetcher + RGB GeoTIFF write
-- [ ] `tests/test_tiling.py` — nested-pyramid tiler
-- [ ] `tests/integration/` — subdir for online tests (network required)
-- [ ] Framework install: add `pytest>=8` and `pytest-mock>=3` to requirements.txt;
-      `pytest tests/` runnable
-
-## Security Domain
-
-`.planning/config.json` does not include a `security_enforcement` key, but the project posture
-is "single researcher, offline ML data pipeline, no production service, no user-supplied
-data, no auth surface." The standard ASVS categories largely do not apply.
-
-### Applicable ASVS Categories
-
-| ASVS Category | Applies | Standard Control |
-|---------------|---------|-----------------|
-| V2 Authentication | no | No auth surface — anonymous S3 + public LUNA/Allmaps/IIIF |
-| V3 Session Management | no | No sessions |
-| V4 Access Control | no | No multi-user model |
-| V5 Input Validation | **partial** | The LUNA / Allmaps response parsers in `rumsey.py` and `allmaps.py` already validate field presence and types. Keep that pattern — never trust upstream JSON without checking field types before float casts. |
-| V6 Cryptography | no | No secrets, no PII, no signing |
-
-### Known Threat Patterns for this Stack
-
-| Pattern | STRIDE | Standard Mitigation |
-|---------|--------|---------------------|
-| Malformed JSON from third-party APIs causing `KeyError`/`TypeError` crashes mid-build | Denial of Service (against ourselves) | Wrap parser code in try/except per item; continue with next item; log to manifest. EXISTING pattern in `allmaps.py:_parse_annotation`. |
-| Path traversal via item IDs ending up in filenames | Tampering | Item IDs are tilde-delimited LUNA IDs like `RUMSEY~8~1~123~456`. No `/` or `..`. **Sanitise anyway** when writing output filenames — replace any non-`[\w-]` chars with `_`. |
-| Zip-slip-style risks in tile output paths | Tampering | We never read user-supplied archives. N/A. |
-| Resource exhaustion from a huge IIIF response (e.g. server ignores `!4096,4096`) | Denial of Service | After fetching, before parsing as JPEG, check `Content-Length`. If > 200 MB (sanity ceiling for any sensible 4096-px JPEG), abort. |
+---
 
 ## Sources
 
-### Primary (HIGH confidence — verified live or from official docs)
+### Primary (HIGH confidence — verified live or from code inspection)
+- `scripts/seg/gcs_checkpoint.py` — reuse template for GCS auth (ADC), `fs.open(path, 'wb')`
+  write pattern, `fs.ls(bare_prefix)` listing idiom. `[VERIFIED: code read 2026-05-16]`
+- `scripts/tiling.py` — full touch-point inventory for the `_GCSWriter` refactor.
+  `[VERIFIED: code read 2026-05-16]`
+- `scripts/build_dataset.py` — `load_or_create_split`, `build_one_source`, collision guard
+  locations. `[VERIFIED: code read 2026-05-16]`
+- `scripts/render.py` — confirmed: does NOT read from GCS or `data/toons/` in Phase 2.
+  `[VERIFIED: code read 2026-05-16]`
+- `scripts/build_historical_dataset.py` — confirmed: all reads/writes are local Path-based
+  today. `[VERIFIED: code read 2026-05-16]`
+- `gcsfs` 2026.5.0 API inspection — `GCSFile` protocol (write, seek, tell, close), `pipe_file`
+  (atomic PUT), `get` (bulk download), `ls` (directory listing). `[VERIFIED: gcsfs API
+  inspection + method source inspection 2026-05-16]`
+- `fsspec` 2026.3.0 — `fsspec.filesystem("file")` for test isolation. `[VERIFIED: 2026-05-16]`
+- slopcheck 0.6.1 — gcsfs, fsspec both `[OK]`. `[VERIFIED: slopcheck output 2026-05-16]`
 
-- Allmaps open-data dump: https://files.allmaps.org/maps.geojsonl — VERIFIED 2026-05-15:
-  176 MB, 58,666 maps total, 10,455 from David Rumsey under 337 manifest URLs.
-- Allmaps annotations API: https://annotations.allmaps.org/ — VERIFIED 2026-05-15: returns
-  `{name: "annotations", version: "2.5.0-beta.0"}` at root; `/maps` returns a paginated
-  AnnotationPage (capped at ~750 items); the offline dump is the right bulk path.
-- Element84 earth-search v1: https://earth-search.aws.element84.com/v1 — VERIFIED 2026-05-15
-  via live STAC item retrieval; `sentinel-2-l2a` collection confirmed; `visual` asset is a
-  pre-stacked TCI 3-band COG; cloud-cover filter syntax `query={"eo:cloud_cover": {"lt": 10}}`.
-- IIIF Image API 3.0 spec: https://iiif.io/api/image/3.0/ — VERIFIED: `!w,h` size syntax
-  is best-fit; `default.jpg` = "server default quality, JPEG"; rotation `0` = no rotation.
-- IIIF Image API 2.1 spec: https://iiif.io/api/image/2.1/ — VERIFIED: same `!w,h` semantics
-  (relevant because Rumsey IIIF surface is 2.x).
-- Rasterio docs (transform module): https://rasterio.readthedocs.io/en/stable/api/rasterio.transform.html
-  — VERIFIED: `from_gcps(gcps) -> Affine`, uses GDAL's `GDALGCPsToGeoTransform` (LSQ).
-- Rasterio docs (georeferencing): https://rasterio.readthedocs.io/en/stable/topics/georeferencing.html
-- pystac-client docs (quickstart): https://pystac-client.readthedocs.io/en/stable/quickstart.html
-  — VERIFIED: dict-style query syntax, endpoint, collection names.
-- Sentinel-2 L2A COG registry: https://registry.opendata.aws/sentinel-2-l2a-cogs/ — VERIFIED:
-  bucket `s3://sentinel-cogs` in `us-west-2`, anonymous access.
-- PyPI version queries (2026-05-15): `pystac-client` 0.9.0, `pystac` 1.14.3, `rasterio` 1.5.0,
-  `pyproj` 3.7.2, `numpy` 2.4.4, `Pillow` 12.2.0.
+### Secondary (MEDIUM confidence — documented rates, not live measurement)
+- GCS pricing: class A ops $0.05/10,000, standard storage $0.020/GB/month, same-region
+  ingress free. `[CITED: cloud.google.com/storage/pricing — rates as of training knowledge;
+  confirm current rates before large builds]`
+- GCS default bucket write quota: 1,000 req/s. `[CITED: cloud.google.com/storage/quotas]`
+- GCS same-region PUT latency: 50–150 ms for objects < 5 MB. `[CITED: GCS performance docs /
+  community benchmarks — ASSUMED for exact numbers]`
 
-### Secondary (MEDIUM confidence)
-
-- Allmaps Rumsey-scripts repo: https://github.com/allmaps/rumsey-scripts — VERIFIED via
-  WebFetch: no bulk-download tools; the open-data dump is the right approach.
-- Observable notebook (David Rumsey / Allmaps): https://observablehq.com/@allmaps/rumsey
-  — CITED: 10,126 Rumsey maps as of Feb 2025, consistent with our 2026-05-15 dump count of
-  10,455 (a 3.3% increase over ~15 months, plausible cadence).
-- Azgaar Fantasy Map Generator GIS export wiki: https://github.com/Azgaar/Fantasy-Map-Generator/wiki/GIS-data-export
-  — Documents what GeoJSON exports include, but does NOT specify whether the heightmap template
-  name is exposed in the export.
-- Azgaar template list: ~12 named templates exist (High Island, Low Island, Continents,
-  Archipelago, Atoll, Mediterranean, Peninsula, Volcano, Pangea, Shattered, Two Continents,
-  Fractured). Source: https://azgaar.wordpress.com/2017/10/05/templates/ —
-  CITED but list is not authoritative; Azgaar's `heightmap-templates.js` would be the source
-  of truth. **Plan-01 should inspect an actual exported GeoJSON file to confirm whether the
-  template name is in the feature properties or in a top-level `metadata` block.**
-- SatlasPretrain dataset paper: https://arxiv.org/abs/2211.15660 — CITED: pattern of
-  geographic stratification + WorldCover-derived labels at scale.
-- Global land cover training dataset (Stanimirova et al. 2023): https://www.nature.com/articles/s41597-023-02798-5
-  — CITED: stratified-sampling-by-ecoregion pattern; reference for our class-diversity approach.
-
-### Tertiary (LOW confidence — flagged for validation)
-
-- Multi-scale nested pyramid storage convention: no canonical pattern found in the
-  geospatial-ML ecosystem (torchgeo's pre-tiled datasets like LandCoverAI use a flat directory
-  with paired image+mask files). **Recommendation: per-pyramid subdirectory with `pyramid.json`
-  manifest, plus an optional top-level `index.parquet` if Phase 3 needs O(1) lookup.**
-- Synthetic dataset target size of 50-100 source maps: heuristic based on Phase-1's 4760 samples
-  scaling; no authoritative source.
-- Slope-from-coarse-DEM limitation severity: known mathematical issue but no measurement of
-  practical impact on segmentation accuracy. Surface as user decision.
+---
 
 ## Metadata
 
 **Confidence breakdown:**
-- Allmaps wiring: HIGH — verified the open-data dump exists, has Rumsey content (10,455
-  canvases under 337 manifests), and that the existing `historical/allmaps.py` lookup logic
-  matches the IIIF Annotation shape.
-- Sentinel-2 + STAC: HIGH — verified the endpoint, collection, asset names, and cloud-cover
-  query syntax against a live earth-search response.
-- IIIF size syntax: HIGH — verified against the IIIF 3.0 spec and the 2.x spec; same semantics.
-- Rasterio GCP affine: HIGH — verified function signature and behaviour from docs.
-- Multi-scale nested pyramid tiler: LOW — no canonical library; custom implementation.
-- Azgaar template-name extraction: LOW — not documented in the GeoJSON export schema. Plan-01
-  needs to inspect an actual export file to confirm where the template name lives.
-- Class-stratified satellite coverage scan: MEDIUM — pattern matches what SatlasPretrain and
-  the 1984-2020 GLC training dataset do; implementation details are our own.
+- gcsfs/fsspec API: HIGH — inspected live from installed 2026.5.0/2026.3.0
+- tiling.py touch points: HIGH — complete inventory from code read
+- GCS write cost/throughput: MEDIUM — documented rates + standard calculations; not live-timed
+- Manifest schema: HIGH — derived from RW-02 requirements, validated against template_key()
+- Pull-once design: HIGH — gcsfs.get API confirmed; verification design is conservative
 
-**Research date:** 2026-05-15
-**Valid until:** 2026-06-15 for Sentinel-2 / STAC + Allmaps (the dump regenerates daily; the
-endpoint contract is stable). 2026-08-15 for rasterio + pystac-client + IIIF (slow-moving
-infrastructure). Re-validate the Allmaps dump URL pattern before plan-01 commits work.
+**Research date:** 2026-05-16
+**Valid until:** 2026-07-16 (gcsfs releases frequently; re-verify API if upgrading beyond
+2026.5.0)
