@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 4 context gathered (reshaped; Phase 5 split out)
-last_updated: "2026-05-16T03:01:32.715Z"
-last_activity: 2026-05-16 -- Phase 4 planning complete
+stopped_at: Session resumed; pushed 10 pending phase1.5 commits
+last_updated: "2026-05-16T15:15:05.014Z"
+last_activity: 2026-05-16 -- Phase 04 execution started
 progress:
   total_phases: 5
   completed_phases: 2
@@ -23,17 +23,17 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 **Core value:** A trained segmentation model on HuggingFace producing dense per-pixel
 land-cover and topography predictions on illustrated regional maps, evaluated by
 joint per-pixel NLL on held-out synthetic maps.
-**Current focus:** Phase 04 (reshaped) — fine-tune + evaluate (joint NLL) +
+**Current focus:** Phase 04 — fine-tune-and-evaluate-the-segmentation-model-then-upload-to
 comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — PLANNED
-Plan: 5 plans / 4 waves written + checker-verified (PASS iter 2/3); ready for /gsd-execute-phase 4
-Status: Ready to execute
+Phase: 04 (fine-tune-and-evaluate-the-segmentation-model-then-upload-to) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 04
 new Phase 5 owns deliverable selection + HuggingFace publish (user decision
 2026-05-16, see 04-CONTEXT.md `<domain>`). Roadmap updated to 5 phases.
-Last activity: 2026-05-16 -- Phase 4 planning complete
+Last activity: 2026-05-16 -- Phase 04 execution started
 working branch `phase1.5`; Phase 3 executed + UAT accepted (03-UAT.md 5/5);
 Phase 2 online gate 6/6 (fixture fix dc4f585, pushed). NOTE: unpushed local
 commits on phase1.5 (closeout docs 176da3c onward) — `git push` when ready.
