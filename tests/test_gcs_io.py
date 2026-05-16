@@ -331,6 +331,8 @@ class TestConcurrentTileWrites:
         _require_gcs_io()
         fs = _local_fs()
         root = _GCSWriter(fs, str(tmp_path / "pyramid"))
+        # Create parent dir first — mirrors tiling.py pdir.mkdir() call before writes
+        root.mkdir()
 
         n_tiles = 64
         errors = []
