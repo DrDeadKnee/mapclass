@@ -84,14 +84,14 @@ consumes the Phase-1 fine-tuned PaliGemma)
      3-class taxonomy
   5. A held-out synthetic subset is reserved as the Phase 4 test set and
      guaranteed unseen during training
-**Plans**: 5 plans
+**Plans**: 5 plans (REPLANNED 2026-05-16 — GCS-canonical rework; prior verification VOID, see _pre-rework-archive/)
 Plans:
-- [x] 02-01-PLAN.md — Wave 0: pytest framework, Allmaps multi-annotation fix (A6), scope-deferral doc edits
-- [x] 02-02-PLAN.md — Historical pipeline: Allmaps→IIIF→GeoTIFF (D-01..D-05), v2 manifest
-- [x] 02-03-PLAN.md — Synthetic pipeline: per-(source×style) output, weights, frozen stratified split (D-15..D-18, EVAL-01)
-- [x] 02-04-PLAN.md — Satellite pipeline: coverage scan + STAC + COG fetch (D-10..D-14)
-- [x] 02-05-PLAN.md — Shared nested-pyramid tiler + integration into all 3 builds (D-06..D-09)
-**Status**: complete (offline verification 5/5; online integration gate 6/6 passed 2026-05-16, see 02-HUMAN-UAT.md)
+- [ ] 02-01-PLAN.md — Wave 0: scripts/gcs_io.py (_GCSWriter/pull/verify/validate_manifest) + offline test infra
+- [ ] 02-02-PLAN.md — Wave 1: synthetic GCS migration — tiling.py 32-thread _GCSWriter (RW-01), manifest-before-split hard-fail (RW-02), GCS split.json (D-17/D-18 reversed), PROJECT.md update
+- [ ] 02-03-PLAN.md — Wave 2: historical pipeline GCS-canonical (RW-04)
+- [ ] 02-04-PLAN.md — Wave 2: satellite pipeline GCS-canonical (RW-04)
+- [ ] 02-05-PLAN.md — Wave 3: finetune/evaluate pull-once+verify (RW-03), _BUILD_COMPLETE sentinel + family-rooted layout (OQ1/OQ2), blocking human Azgaar-regeneration gate
+**Status**: replanned (rework — execution pending; `/gsd:execute-phase 2`)
 
 ### Phase 3: Build a dense semantic segmentation pipeline
 **Goal**: Construct a dense pixel-level segmentation model using the Phase-1
