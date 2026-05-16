@@ -46,6 +46,20 @@ if str(_HERE) not in sys.path:
 from seg.recursive import recursive_predict, recursive_predict_variant_b  # noqa: E402
 from seg.model import SegModelVariantA, SegModelVariantB                  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# RW-03: pull-once gcs_io import (try/except ImportError for offline CI)
+# ---------------------------------------------------------------------------
+# Imported here (module level) so evaluate() can reference pull_dataset_from_gcs
+# and verify_pull.  Falls back to None on planning VM / offline CI.
+try:
+    from gcs_io import pull_dataset_from_gcs, verify_pull, DATA_PREFIX as _DATA_PREFIX  # type: ignore[import]
+    _gcs_io_available: bool = True
+except ImportError:
+    pull_dataset_from_gcs = None  # type: ignore[assignment]
+    verify_pull = None  # type: ignore[assignment]
+    _DATA_PREFIX = "mapclass-training-northeast1/data"
+    _gcs_io_available = False
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -291,6 +305,119 @@ def write_nll_metrics(
 
 
 # ---------------------------------------------------------------------------
+# evaluate (public API callable by tests)
+# ---------------------------------------------------------------------------
+
+def evaluate(args: argparse.Namespace) -> None:
+    """
+    Run the full NLL evaluation pipeline for a trained segmentation model.
+
+    This function is called by main() after argparse, and is also directly
+    callable by tests (offline or mocked).
+
+    Parameters
+    ----------
+    args: argparse.Namespace with fields:
+        backbone, variant, split_json, data_root, metrics_dir, checkpoint,
+        scratch_dir (Path | None, default /tmp/mapclass_data).
+    """
+    # ------------------------------------------------------------------
+    # (RW-03) Step 1: pull-once — bulk-fetch the synthetic test subset from
+    # GCS to local scratch BEFORE load_test_pyramid_dirs.  evaluate pulls
+    # ONLY the synthetic test subset (EVAL-01 hold-out is synthetic-only;
+    # OQ2 decision: split.json stays at gs://.../data/synthetic/split.json).
+    # ImportError fallback: use args.split_json / args.data_root as-is.
+    # ------------------------------------------------------------------
+    split_json = getattr(args, "split_json", None)
+    data_root = getattr(args, "data_root", None)
+    scratch_dir = getattr(args, "scratch_dir", None)
+
+    try:
+        if _gcs_io_available and scratch_dir is not None and pull_dataset_from_gcs is not None:
+            print(f"[RW-03] Pulling test subset from GCS → {scratch_dir} …")
+            local_root = pull_dataset_from_gcs("test", scratch_dir)
+            # Read split.json from GCS and write to scratch so load_test_pyramid_dirs
+            # consumes a local Path (unchanged internals).
+            try:
+                import gcsfs as _gcsfs  # type: ignore[import]
+                _fs = _gcsfs.GCSFileSystem(project="narrative-campaign")
+                _split_bytes = _fs.cat(f"{_DATA_PREFIX}/synthetic/split.json")
+                local_split_path = Path(scratch_dir) / "split.json"
+                local_split_path.parent.mkdir(parents=True, exist_ok=True)
+                local_split_path.write_bytes(_split_bytes)
+                import json as _json
+                _split_data = _json.loads(_split_bytes)
+            except Exception:
+                _split_data = {"test": [], "train": []}
+                local_split_path = split_json  # type: ignore[assignment]
+            if verify_pull is not None:
+                verify_pull(local_root, _split_data, "test")
+            split_json = local_split_path
+            data_root = local_root.parent  # scratch_dir (merged root for local paths)
+            print(f"[RW-03] Pull complete. data_root → {data_root}")
+    except ImportError:
+        # gcsfs not installed (offline CI / planning VM) — fall back to local args
+        print("[RW-03] gcsfs unavailable — falling back to local split_json/data_root")
+        split_json = getattr(args, "split_json", split_json)
+        data_root = getattr(args, "data_root", data_root)
+
+    # ------------------------------------------------------------------
+    # Build model
+    # ------------------------------------------------------------------
+    if args.variant == "A":
+        model = SegModelVariantA(backbone_name=args.backbone)
+    else:
+        model = SegModelVariantB(backbone_name=args.backbone)
+
+    # ------------------------------------------------------------------
+    # Load checkpoint
+    # ------------------------------------------------------------------
+    checkpoint_str = str(args.checkpoint)
+    if checkpoint_str.startswith("gs://"):
+        # GCS checkpoint: delegate to seg.gcs_checkpoint if available
+        try:
+            from seg import gcs_checkpoint as _gcs
+            state_dict = _gcs.gcs_latest_checkpoint(checkpoint_str)
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeError(
+                "GCS checkpoint loading requires seg.gcs_checkpoint "
+                f"(not yet available): {exc}"
+            ) from exc
+    else:
+        state_dict = torch.load(checkpoint_str, map_location="cpu")
+
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        state_dict = state_dict["model_state_dict"]
+    model.load_state_dict(state_dict)
+
+    # ------------------------------------------------------------------
+    # Enumerate test pyramid dirs (AFTER pull-once stage above — RW-03)
+    # ------------------------------------------------------------------
+    test_dirs = load_test_pyramid_dirs(split_json, data_root)
+    if not test_dirs:
+        print("Warning: no test pyramid directories found — check --split-json and --data-root.")
+
+    # ------------------------------------------------------------------
+    # Evaluate
+    # ------------------------------------------------------------------
+    nll = evaluate_joint_nll(model, test_dirs, variant=args.variant)
+    print(f"Joint per-pixel NLL ({args.backbone}-{args.variant}): {nll:.6f}")
+
+    # ------------------------------------------------------------------
+    # Write metrics
+    # ------------------------------------------------------------------
+    config_name = f"{args.backbone}-{args.variant}"
+    out_path = write_nll_metrics(
+        config_name=config_name,
+        nll=nll,
+        metrics_dir=args.metrics_dir,
+        variant=args.variant,
+        backbone=args.backbone,
+    )
+    print(f"Metrics written to: {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -338,62 +465,20 @@ def main() -> None:
             "(gs:// URI support requires seg.gcs_checkpoint)"
         ),
     )
-    args = parser.parse_args()
-
-    # ------------------------------------------------------------------
-    # Build model
-    # ------------------------------------------------------------------
-    if args.variant == "A":
-        model = SegModelVariantA(backbone_name=args.backbone)
-    else:
-        model = SegModelVariantB(backbone_name=args.backbone)
-
-    # ------------------------------------------------------------------
-    # Load checkpoint
-    # ------------------------------------------------------------------
-    checkpoint_str = str(args.checkpoint)
-    if checkpoint_str.startswith("gs://"):
-        # GCS checkpoint: delegate to seg.gcs_checkpoint if available
-        try:
-            from seg import gcs_checkpoint as _gcs
-            state_dict = _gcs.gcs_latest_checkpoint(checkpoint_str)
-        except (ImportError, AttributeError) as exc:
-            raise RuntimeError(
-                "GCS checkpoint loading requires seg.gcs_checkpoint "
-                f"(not yet available): {exc}"
-            ) from exc
-    else:
-        state_dict = torch.load(checkpoint_str, map_location="cpu")
-
-    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
-        state_dict = state_dict["model_state_dict"]
-    model.load_state_dict(state_dict)
-
-    # ------------------------------------------------------------------
-    # Enumerate test pyramid dirs
-    # ------------------------------------------------------------------
-    test_dirs = load_test_pyramid_dirs(args.split_json, args.data_root)
-    if not test_dirs:
-        print("Warning: no test pyramid directories found — check --split-json and --data-root.")
-
-    # ------------------------------------------------------------------
-    # Evaluate
-    # ------------------------------------------------------------------
-    nll = evaluate_joint_nll(model, test_dirs, variant=args.variant)
-    print(f"Joint per-pixel NLL ({args.backbone}-{args.variant}): {nll:.6f}")
-
-    # ------------------------------------------------------------------
-    # Write metrics
-    # ------------------------------------------------------------------
-    config_name = f"{args.backbone}-{args.variant}"
-    out_path = write_nll_metrics(
-        config_name=config_name,
-        nll=nll,
-        metrics_dir=args.metrics_dir,
-        variant=args.variant,
-        backbone=args.backbone,
+    parser.add_argument(
+        "--scratch-dir",
+        type=Path,
+        default=Path("/tmp/mapclass_data"),
+        dest="scratch_dir",
+        help=(
+            "Local scratch directory for the RW-03 pull-once dataset fetch. "
+            "pull_dataset_from_gcs downloads the synthetic test subset here "
+            "before load_test_pyramid_dirs runs. Ignored in offline mode (gcsfs absent). "
+            "Default: /tmp/mapclass_data"
+        ),
     )
-    print(f"Metrics written to: {out_path}")
+    args = parser.parse_args()
+    evaluate(args)
 
 
 if __name__ == "__main__":

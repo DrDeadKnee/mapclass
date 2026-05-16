@@ -47,8 +47,11 @@ class TestFinetunePullOnce:
 
     def test_finetune_pull_once_before_resume(self):
         """
-        pull_dataset_from_gcs must appear BEFORE gcs_latest_checkpoint in
-        finetune_seg.py (RW-03 — pull-once precedes checkpoint resume).
+        pull_dataset_from_gcs( call must appear BEFORE gcs_latest_checkpoint(
+        in finetune_seg.py (RW-03 — pull-once precedes checkpoint resume).
+
+        We look for the function call pattern (with opening parenthesis) to
+        avoid matching imports or docstring mentions.
         """
         src = _src("finetune_seg.py")
 
@@ -59,11 +62,20 @@ class TestFinetunePullOnce:
             "finetune_seg.py must call verify_pull (RW-03)"
         )
 
-        pull_pos = src.index("pull_dataset_from_gcs")
-        resume_pos = src.index("gcs_latest_checkpoint")
+        # Use the call-site pattern (with opening paren) to skip import lines
+        pull_call = "pull_dataset_from_gcs("
+        resume_call = "gcs_latest_checkpoint("
+        assert pull_call in src, (
+            "finetune_seg.py must have a pull_dataset_from_gcs(...) call site"
+        )
+        assert resume_call in src, (
+            "finetune_seg.py must have a gcs_latest_checkpoint(...) call site"
+        )
+        pull_pos = src.index(pull_call)
+        resume_pos = src.index(resume_call)
         assert pull_pos < resume_pos, (
-            f"pull_dataset_from_gcs (pos {pull_pos}) must appear before "
-            f"gcs_latest_checkpoint (pos {resume_pos}) in finetune_seg.py (RW-03)"
+            f"pull_dataset_from_gcs( (pos {pull_pos}) must appear before "
+            f"gcs_latest_checkpoint( (pos {resume_pos}) in finetune_seg.py (RW-03)"
         )
 
     def test_finetune_has_scratch_dir_arg(self):
@@ -99,8 +111,8 @@ class TestEvaluatePullOnce:
 
     def test_evaluate_pull_once_before_load(self):
         """
-        pull_dataset_from_gcs must appear BEFORE load_test_pyramid_dirs in
-        evaluate_seg.py (RW-03 — pull-once precedes enumerate).
+        pull_dataset_from_gcs( call must appear BEFORE load_test_pyramid_dirs(
+        in evaluate_seg.py (RW-03 — pull-once precedes enumerate).
         """
         src = _src("evaluate_seg.py")
 
@@ -111,11 +123,25 @@ class TestEvaluatePullOnce:
             "evaluate_seg.py must call verify_pull (RW-03)"
         )
 
-        pull_pos = src.index("pull_dataset_from_gcs")
-        load_pos = src.index("load_test_pyramid_dirs")
+        # Use call-site patterns: look for the evaluate() body call signature
+        # load_test_pyramid_dirs is defined as a function (line ~88) but called later.
+        # We compare the last occurrence of pull_dataset_from_gcs( with
+        # the last occurrence of load_test_pyramid_dirs( to find the call sites.
+        pull_call = "pull_dataset_from_gcs("
+        # load_test_pyramid_dirs is called as a function call inside evaluate().
+        # The call-site search uses rfind to get the LAST occurrence (the call, not the def).
+        assert pull_call in src, (
+            "evaluate_seg.py must have a pull_dataset_from_gcs(...) call site"
+        )
+        assert "load_test_pyramid_dirs(" in src, (
+            "evaluate_seg.py must have a load_test_pyramid_dirs(...) call site"
+        )
+        # rfind gives the LAST occurrence — the actual call in evaluate(), not the def
+        pull_pos = src.rfind(pull_call)
+        load_pos = src.rfind("load_test_pyramid_dirs(")
         assert pull_pos < load_pos, (
-            f"pull_dataset_from_gcs (pos {pull_pos}) must appear before "
-            f"load_test_pyramid_dirs (pos {load_pos}) in evaluate_seg.py (RW-03)"
+            f"pull_dataset_from_gcs( (pos {pull_pos}) must appear before "
+            f"load_test_pyramid_dirs( (pos {load_pos}) in evaluate_seg.py (RW-03)"
         )
 
     def test_evaluate_has_scratch_dir_arg(self):
