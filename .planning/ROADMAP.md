@@ -147,8 +147,14 @@ trained models/dataset before delivering.
      a written A/B × backbone comparison report are produced
   4. A cost-probe (SigLIP Variant B) precedes the full grid; a manual
      checkpoint:decision gate sets grid breadth from measured GPU cost
-**Plans**: TBD
-**Status**: not_started
+**Plans**: 5 plans
+Plans:
+- [ ] 04-01-PLAN.md — Wave 0: 3 offline test files + train_utils (weighted joint loss, teacher-forced c2f step, AdamW groups, train→val carve)
+- [ ] 04-02-PLAN.md — GCS checkpoint write/auto-resume module + mocked offline round-trip suite (D-07/D-09)
+- [ ] 04-03-PLAN.md — Joint per-pixel NLL eval harness over test/ reusing recursive c2f; multi-backbone parity (EVAL-02/EVAL-03)
+- [ ] 04-04-PLAN.md — finetune_seg.py training loop + cost-probe mode + deferred GPU-host gate (04-HUMAN-UAT.md)
+- [ ] 04-05-PLAN.md — Blocking cost-probe decision gate (D-05) + comparison report renderer + metrics/manifest (D-08)
+**Status**: planned
 
 ### Phase 5: Explore, select, and publish the segmentation model
 **Goal**: Hands-on exploration of the Phase-4 trained models and the dataset by
