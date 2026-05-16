@@ -274,7 +274,21 @@ import types as _types
 
 _SEG_WEIGHTS_BLOB = _json.dumps(
     {
-        "land_cover_weights": {"trees": 0.3, "cropland": 0.15},
+        # All 9 LANDCOVER_CLASSES must be present (T-04-01 / build_lc_weight_tensor
+        # validation).  Weights reflect the Phase-4 synthetic-source defaults:
+        # satellite-only classes (cropland, built_up, flooded_wetland) set to 0.0
+        # so the fixture never requires those labels; all others uniform at 1.0.
+        "land_cover_weights": {
+            "water":           1.0,
+            "trees":           0.3,   # downweighted: historical stale
+            "shrubland":       1.0,
+            "grassland":       1.0,
+            "cropland":        0.15,  # satellite-only
+            "built_up":        0.15,  # satellite-only
+            "bare_sparse":     1.0,
+            "flooded_wetland": 0.15,  # satellite-only
+            "snow_ice":        1.0,
+        },
         "topography_weight": 1.0,
         "source": "synthetic",
         "map_file": "fixture",

@@ -39,6 +39,21 @@ def _require_training():
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_sample_weights(weight: float = 1.0) -> dict:
+    """Build a well-formed sample_weights dict with all 9 LANDCOVER_CLASSES keys."""
+    from biome_mapping import LANDCOVER_CLASSES  # accessible via pytest pythonpath
+    return {
+        "land_cover_weights": {c: weight for c in LANDCOVER_CLASSES},
+        "topography_weight": weight,
+        "source": "synthetic",
+        "map_file": "fixture",
+    }
+
+
+# ---------------------------------------------------------------------------
 # TestWeightedJointLoss — loss formula shape + value sanity
 # ---------------------------------------------------------------------------
 
@@ -53,9 +68,9 @@ class TestWeightedJointLoss:
         from seg.train_utils import weighted_joint_loss
 
         man = json.loads((mini_pyramid / "pyramid.json").read_text())
-        sw = json.loads((mini_pyramid / "sample_weights.json").read_text())
         tile = man["tiles"][0]
         size = tile["size"]
+        sw = _make_sample_weights(1.0)
 
         lc_logits = torch.zeros(1, 9, size, size)
         topo_logits = torch.zeros(1, 3, size, size)
