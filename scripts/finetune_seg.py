@@ -56,6 +56,23 @@ from seg.gcs_checkpoint import (
     gcs_save_checkpoint,
 )
 
+# ---------------------------------------------------------------------------
+# RW-03: pull-once gcs_io import (try/except ImportError for offline CI)
+# ---------------------------------------------------------------------------
+# Imported here (module level) so train() can reference pull_dataset_from_gcs
+# and verify_pull.  Falls back silently to None when gcs_io is absent (planning
+# VM / offline CI) — the ImportError is re-raised inside train() if the caller
+# actually requests a GCS pull (i.e. args.scratch_dir is set and gcs_io is
+# needed).
+try:
+    from gcs_io import pull_dataset_from_gcs, verify_pull, DATA_PREFIX as _DATA_PREFIX  # type: ignore[import]
+    _gcs_io_available: bool = True
+except ImportError:
+    pull_dataset_from_gcs = None  # type: ignore[assignment]
+    verify_pull = None  # type: ignore[assignment]
+    _DATA_PREFIX = "mapclass-training-northeast1/data"
+    _gcs_io_available = False
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -191,7 +208,7 @@ def train(args: argparse.Namespace) -> None:
     - train_ds, val_ds built via carve_train_val(args.train_root) — train/ only (EVAL-01)
     - SegModelVariantA or B constructed for args.backbone
     - make_optimizer() builds AdamW two-group optimizer
-    - gcs_latest_checkpoint() auto-resumes if a checkpoint exists
+    - gcs_latest_checkpoint auto-resumes if a checkpoint exists
     - Epoch loop: one pyramid per step via train_step_variant_a/b
     - Every args.ckpt_every steps: gcs_save_checkpoint AFTER optimizer.step
     - Per-epoch flat val pass over val_ds (no recursive_predict, no test/)
@@ -201,9 +218,36 @@ def train(args: argparse.Namespace) -> None:
     dtype = torch.bfloat16 if torch.cuda.is_available() and args.amp else torch.float32
     print(f"Device: {device} | dtype: {dtype}")
 
+    # (RW-03) Step 1: pull-once — bulk-fetch train subset from GCS to local scratch
+    # before carve_train_val.  The ImportError fallback preserves offline CI / args.train_root.
+    # This block runs BEFORE the gcs_latest_checkpoint resume block below (Step 4).
+    train_root = getattr(args, "train_root", "data/synthetic/train")
+    scratch_dir = getattr(args, "scratch_dir", None)
+    try:
+        if _gcs_io_available and scratch_dir is not None and pull_dataset_from_gcs is not None:
+            print(f"[RW-03] Pulling train subset from GCS → {scratch_dir} …")
+            local_root = pull_dataset_from_gcs("train", scratch_dir)
+            # Read split.json from GCS to pass to verify_pull
+            try:
+                import gcsfs as _gcsfs  # type: ignore[import]
+                _fs = _gcsfs.GCSFileSystem(project="narrative-campaign")
+                import json as _json
+                _split_json_bytes = _fs.cat(f"{_DATA_PREFIX}/synthetic/split.json")
+                _split_json_data = _json.loads(_split_json_bytes)
+            except Exception:
+                _split_json_data = {"train": [], "test": []}
+            if verify_pull is not None:
+                verify_pull(local_root, _split_json_data, "train")
+            train_root = str(local_root)
+            print(f"[RW-03] Pull complete. train_root → {train_root}")
+    except ImportError:
+        # gcsfs not installed (offline CI / planning VM) — fall back to args.train_root
+        print("[RW-03] gcsfs unavailable — falling back to args.train_root (offline mode)")
+        train_root = getattr(args, "train_root", train_root)
+
     # (1) Build train/val datasets from train/ roots only — EVAL-01 (T-04-10)
     # carve_train_val raises ValueError if any test/ path slips through (PyramidDataset guard)
-    train_ds, val_ds = carve_train_val(args.train_root, val_frac=0.2, seed=42)
+    train_ds, val_ds = carve_train_val(train_root, val_frac=0.2, seed=42)
     print(f"Dataset: {len(train_ds)} train / {len(val_ds)} val pyramids")
 
     # (2) Instantiate model
@@ -397,6 +441,18 @@ def main() -> None:
         action="store_true",
         dest="offline_stub",
         help="CI-only: use stub backbone (no pretrained weights, no GCS) for offline tests",
+    )
+    parser.add_argument(
+        "--scratch-dir",
+        type=Path,
+        default=Path("/tmp/mapclass_data"),
+        dest="scratch_dir",
+        help=(
+            "Local scratch directory for the RW-03 pull-once dataset fetch. "
+            "pull_dataset_from_gcs downloads the train subset here before "
+            "carve_train_val runs. Ignored in offline mode (gcsfs absent). "
+            "Default: /tmp/mapclass_data"
+        ),
     )
     args = parser.parse_args()
     train(args)

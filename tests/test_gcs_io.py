@@ -324,6 +324,103 @@ class TestVerifyPull:
         verify_pull(local_root, split_json, "train")
 
 
+# ---------------------------------------------------------------------------
+# Task 5 Tests — _BUILD_COMPLETE sentinel (OQ1) + family_subset_prefix (OQ2)
+# ---------------------------------------------------------------------------
+
+# Lazily import new Task-5 symbols so earlier tasks still pass without them.
+_mark_complete_fn = None
+_is_complete_fn = None
+_family_prefix_fn = None
+try:
+    from gcs_io import mark_build_complete, is_build_complete, family_subset_prefix
+    _mark_complete_fn = mark_build_complete
+    _is_complete_fn = is_build_complete
+    _family_prefix_fn = family_subset_prefix
+except ImportError:
+    pass
+
+
+def _require_task5() -> None:
+    if any(fn is None for fn in [_mark_complete_fn, _is_complete_fn, _family_prefix_fn]):
+        pytest.fail(
+            "mark_build_complete / is_build_complete / family_subset_prefix "
+            "not yet implemented in gcs_io",
+            pytrace=False,
+        )
+
+
+class TestBuildCompleteSentinel:
+    """_BUILD_COMPLETE sentinel: written last, gates skip correctly (OQ1)."""
+
+    def setup_method(self):
+        _MockGCSFileSystem._reset()
+
+    def test_build_complete_written_last(self, tmp_path):
+        """After mark_build_complete, sentinel object exists in the mock store."""
+        _require_task5()
+        fs = _MockGCSFileSystem()
+        map_dir_prefix = "mapclass-training-northeast1/data/synthetic/train/europe_01__flat"
+        # Simulate writing some pyramid objects first (normal build)
+        fs.pipe_file(f"{map_dir_prefix}/pyramids/py_r0/pyramid.json", b"{}")
+        # Now write the sentinel last
+        mark_build_complete(fs, map_dir_prefix)
+        sentinel_key = f"{map_dir_prefix}/_BUILD_COMPLETE"
+        assert sentinel_key in _MockGCSFileSystem._store, (
+            f"Expected sentinel at {sentinel_key!r}; store keys: "
+            f"{list(_MockGCSFileSystem._store.keys())}"
+        )
+
+    def test_skip_only_if_sentinel_present(self, tmp_path):
+        """A prefix that exists but lacks sentinel is NOT skipped (partial/aborted)."""
+        _require_task5()
+        fs = _MockGCSFileSystem()
+        map_dir_prefix = "mapclass-training-northeast1/data/synthetic/train/europe_02__flat"
+
+        # Write some pyramids but NO sentinel → should NOT be considered complete
+        fs.pipe_file(f"{map_dir_prefix}/pyramids/py_r0/pyramid.json", b"{}")
+        assert not is_build_complete(fs, map_dir_prefix), (
+            "is_build_complete must return False when sentinel is absent (partial build)"
+        )
+
+        # Write sentinel → now it IS complete
+        mark_build_complete(fs, map_dir_prefix)
+        assert is_build_complete(fs, map_dir_prefix), (
+            "is_build_complete must return True after mark_build_complete"
+        )
+
+    def test_is_build_complete_false_for_empty_prefix(self):
+        """is_build_complete returns False for a prefix with no objects at all."""
+        _require_task5()
+        _MockGCSFileSystem._reset()
+        fs = _MockGCSFileSystem()
+        assert not is_build_complete(fs, "mapclass-training-northeast1/data/synthetic/train/nonexistent")
+
+
+class TestLayoutConstants:
+    """family_subset_prefix resolves (family, subset) → expected GCS path (OQ2)."""
+
+    def test_layout_constants(self):
+        """family_subset_prefix returns the family-rooted GCS path string."""
+        _require_task5()
+        result = family_subset_prefix("synthetic", "train")
+        assert result == "mapclass-training-northeast1/data/synthetic/train", (
+            f"Expected 'mapclass-training-northeast1/data/synthetic/train', got {result!r}"
+        )
+
+    def test_layout_constants_historical(self):
+        """family_subset_prefix works for historical family too."""
+        _require_task5()
+        result = family_subset_prefix("historical", "dataset")
+        assert result == "mapclass-training-northeast1/data/historical/dataset"
+
+    def test_layout_constants_satellite(self):
+        """family_subset_prefix works for satellite family."""
+        _require_task5()
+        result = family_subset_prefix("satellite", "train")
+        assert result == "mapclass-training-northeast1/data/satellite/train"
+
+
 class TestConcurrentTileWrites:
     """32-thread concurrent writes via _GCSWriter to local fs produce no key loss."""
 

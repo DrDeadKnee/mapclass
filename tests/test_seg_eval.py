@@ -425,3 +425,4 @@ class TestEvalAllBackbones:
             f"for backbone={backbone!r} variant={variant!r}\n"
             "Check that the mini_pyramid has valid (< 9 LC, < 3 topo) label pixels."
         )
+
