@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 02 REWORK context gathered (GCS-canonical dataset; all 5 plans to be replanned; prior verification void)
-last_updated: "2026-05-16T21:02:03.596Z"
+last_updated: "2026-05-16T21:28:19.859Z"
 progress:
   total_phases: 5
   completed_phases: 1
@@ -22,14 +22,14 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 **Core value:** A trained segmentation model on HuggingFace producing dense per-pixel
 land-cover and topography predictions on illustrated regional maps, evaluated by
 joint per-pixel NLL on held-out synthetic maps.
-**Current focus:** Phase 04 — fine-tune-and-evaluate-the-segmentation-model-then-upload-to
+**Current focus:** Phase 02 — build-a-dataset-of-pixel-label-pairs
 comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 04 (fine-tune-and-evaluate-the-segmentation-model-then-upload-to) — PAUSED (after wave 3)
-Plan: 04-05 of 5 — DEFERRED (blocking gate)
-Status: Ready to execute
+Phase: 02 (build-a-dataset-of-pixel-label-pairs) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 02
 working branch `phase4` (HEAD c6e3af4), in sync with origin/phase4 through 229539d;
 session commits 229539d..c6e3af4 NOT yet pushed.
 
