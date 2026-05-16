@@ -849,23 +849,20 @@ baseline; some pyramid dirs contain fewer than 65 files.
 
 ---
 
-## Open Questions (none blocking planning)
+## Open Questions (RESOLVED)
 
 1. **Should the build add a `_BUILD_COMPLETE` sentinel to each map-dir in GCS?**
    - What we know: partial pyramid uploads are a preemption risk; there is no atomic
      directory-level commit in GCS.
-   - What's unclear: whether the user wants this protection or prefers manual cleanup.
-   - Recommendation: add the sentinel as a cheap safeguard; document it in the plan.
-   - **Not blocking planning — planner should include this as an optional task.**
+   - **RESOLVED: ADD the sentinel** (02-05 Task 1). Written per map-dir across all
+     three build scripts as a cheap partial-upload safeguard.
 
 2. **Should the pull-once fetch all three families (synthetic + historical + satellite) or
    only the synthetic family?**
    - What we know: `finetune_seg.py` / `evaluate_seg.py` train on the MERGED dataset across
-     all three families (same `train/` root after RW-04 reorganization).
-   - What's unclear: whether all three families share a single GCS `data/train/` root or
-     separate per-family roots with a merged local scratch.
-   - Recommendation: planner should clarify the merged-vs-family-rooted layout in 02-05.
-   - **Not blocking — planner resolves this in the finetune/evaluate plan.**
+     all three families.
+   - **RESOLVED: family-rooted GCS layout + merged local scratch** (02-05 OQ2
+     DECISION); synthetic-only `split.json` governs the EVAL-01 hold-out.
 
 ---
 
