@@ -815,7 +815,7 @@ trainable_names = [
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **C2f training granularity: one pyramid per batch element, or all tiles independently?**
    - What we know: `PyramidDataset` indexes individual tiles, not whole pyramids. A training
@@ -828,6 +828,9 @@ trainable_names = [
    - Recommendation: Option (a) — group by pyramid for correctness. The recursive walk is
      only 21 tiles per pyramid (1+4+16); processing one pyramid per GPU step is tractable.
      The DataLoader should return pyramid directories (not individual tiles) during training.
+   - RESOLVED: Per-pyramid C2f training granularity — one pyramid = one optimizer step. The
+     04-04 Task 1 training loop implements the teacher-forced per-pyramid C2f walk (Option
+     (a)); the DataLoader returns whole pyramid directories, not individual tiles.
 
 2. **Epoch and step budget for the cost probe and full training runs.**
    - What we know: The cost probe is a short SigLIP-B run (D-04). "Short" is unspecified.
@@ -838,6 +841,10 @@ trainable_names = [
      definitive GPU-hrs/epoch number with minimal noise. The cost-probe plan task should
      time the epoch, compute `projected_full_cost = measured_epoch_hrs * n_epochs * 6_configs`,
      and present that to the user at the gate.
+   - RESOLVED: Cost-probe budget = one full epoch over the carved train split. 04-04 Task 1
+     `--probe` mode runs exactly one epoch over `train_ds` and prints the definitive
+     GPU-hrs/epoch figure + projected full-grid cost, which the 04-05 checkpoint:decision
+     gate consumes.
 
 3. **Mixed-precision training (AMP) on the GPU host.**
    - What we know: The GPU host has CUDA (the planning VM has PyTorch 2.12+cu130 installed).
@@ -847,6 +854,9 @@ trainable_names = [
    - Recommendation: Plan AMP as an optional flag (`--amp`). Document as Claude's
      discretion; default to fp32 for correctness in the first probe run, enable AMP
      once the probe confirms training stability.
+   - RESOLVED: AMP is an optional `--amp` CLI flag on `finetune_seg.py` (04-04 Task 1);
+     default is fp32 for the first probe run for correctness, AMP enabled only after the
+     probe confirms training stability.
 
 ---
 
