@@ -11,11 +11,19 @@ no network. ``sample_weights.json`` propagates byte-identically into each
 pyramid subdir, and the synthetic train/test boundary (EVAL-01) survives tiling.
 """
 
+import io
 import itertools
 import json
+import sys
+from pathlib import Path
 
+import fsspec
 import pytest
 from PIL import Image
+
+_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
 
 from tiling import (
     PYRAMID_896,
@@ -25,6 +33,7 @@ from tiling import (
     enumerate_pyramids,
     tile,
 )
+from gcs_io import _GCSWriter
 
 WEIGHTS_BLOB = json.dumps(
     {
@@ -222,3 +231,73 @@ def test_split_subtree_preserved(tmp_path):
     train_pyr_dirs = {p.name for p in train_out.iterdir() if p.is_dir()}
     test_pyr_dirs = {p.name for p in test_out.iterdir() if p.is_dir()}
     assert train_pyr_dirs and test_pyr_dirs
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (02-02): _GCSWriter out_root + ThreadPoolExecutor tests
+# ---------------------------------------------------------------------------
+
+def _local_gcs_writer(tmp_path, rel_prefix: str) -> "_GCSWriter":
+    """Return a _GCSWriter backed by a local fsspec filesystem."""
+    fs = fsspec.filesystem("file")
+    return _GCSWriter(fs, str(tmp_path / rel_prefix))
+
+
+def test_tile_to_gcs_writer(tmp_path):
+    """tile() with a _GCSWriter out_root produces complete pyramid dirs.
+
+    Structure must be identical to the local-Path output: image/land_cover/
+    topography PNGs + pyramid.json + sample_weights.json in each subdir.
+    Tests RW-01: _GCSWriter-aware tile() with 32-thread write pool.
+    """
+    src = _make_map_dir(tmp_path / "map", FULL_W, FULL_H)
+    out_writer = _local_gcs_writer(tmp_path, "train")
+    result = tile(src, out_root=out_writer)
+
+    # result must be the _GCSWriter (or a Path-like representation)
+    # Inspect the local fs at the prefix directly
+    train_dir = tmp_path / "train"
+    assert train_dir.exists(), "out_root directory not created"
+
+    pyramid_dirs = [p for p in train_dir.iterdir() if p.is_dir()]
+    assert pyramid_dirs, "no pyramid dirs produced under _GCSWriter out_root"
+
+    for pdir in pyramid_dirs:
+        # Check pyramid.json exists
+        assert (pdir / "pyramid.json").exists(), f"missing pyramid.json in {pdir.name}"
+        manifest = json.loads((pdir / "pyramid.json").read_text())
+        assert len(manifest["tiles"]) == 21, f"expected 21 tiles, got {len(manifest['tiles'])}"
+
+        # Check sample_weights.json exists and is byte-identical to source
+        assert (pdir / "sample_weights.json").exists(), \
+            f"missing sample_weights.json in {pdir.name}"
+        assert (pdir / "sample_weights.json").read_bytes() == \
+            (src / "sample_weights.json").read_bytes(), \
+            "sample_weights.json content mismatch"
+
+        # Check all tile PNGs exist
+        for t in manifest["tiles"]:
+            assert (pdir / t["image"]).exists(), \
+                f"missing image tile {t['image']} in {pdir.name}"
+            assert (pdir / t["land_cover"]).exists(), \
+                f"missing land_cover tile {t['land_cover']} in {pdir.name}"
+            assert (pdir / t["topography"]).exists(), \
+                f"missing topography tile {t['topography']} in {pdir.name}"
+
+
+def test_tile_local_path_unchanged(tmp_path):
+    """tile() with out_root=None still produces local pyramids (no regression).
+
+    Verifies that the _GCSWriter branch does not break the existing local-Path
+    code path.
+    """
+    src = _make_map_dir(tmp_path / "map", FULL_W, FULL_H)
+    out = tile(src, out_root=None)
+
+    # Should be a Path under src/pyramids (default)
+    assert isinstance(out, Path), "expected Path for local out_root=None"
+    pyramid_dirs = [p for p in out.iterdir() if p.is_dir()]
+    assert pyramid_dirs, "no pyramid dirs produced for local out_root=None"
+    for pdir in pyramid_dirs:
+        assert (pdir / "pyramid.json").exists()
+        assert (pdir / "sample_weights.json").exists()

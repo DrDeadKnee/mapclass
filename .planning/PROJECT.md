@@ -208,6 +208,9 @@ Format mirrors what a future ADR promotion would look like.
 | Three-source dataset (historical + synthetic + satellite) with class-conditional weights | Each source has different reliability per class (historical land-use is stale; synthetic lacks built-up/cropland/wetland) — weighting reflects that honestly | — Pending |
 | Coarse-to-fine inference over the Phase-1 SigLIP encoder, with DINOv2 / Swin as benchmark alternatives | Captures spatial context cheaply, reuses Phase-1 LoRA investment, keeps two strong baselines available | — Pending |
 | HuggingFace upload as the only deliverable; no polygonisation | Keeps scope contained — region delineation is genuinely a separate problem | — Pending |
+| **[REVERSED 2026-05-16, 02-02] D-06: tiles stream to GCS, not canonical-on-disk** | Root-cause of synthetic data loss: local-only pyramid writes on ephemeral compute were destroyed on preemption. tiling.py now writes pyramids through `_GCSWriter` with 32-thread pool. Local Path path preserved for tests/offline use. | — Applied in 02-02 |
+| **[REVERSED 2026-05-16, 02-02] D-17: `gs://.../data/synthetic/{train,test}/` canonical; filesystem separation now transient scratch** | GCS is the canonical store for all synthetic dataset outputs. Local scratch is used only for rendering/labelling reads; all pyramid writes stream to GCS. | — Applied in 02-02 |
+| **[REVERSED 2026-05-16, 02-02] D-18: split.json relocated to `gs://.../data/synthetic/split.json`; prior frozen split GONE; NEW split freezes on regenerated Azgaar sources** | Prior split.json (if any) referenced Azgaar raw inputs that were lost with ephemeral compute. The GCS-canonical split.json is frozen on first build; --refreeze-split is the only deliberate recompute path (Pitfall R-3). validate_manifest hard-fails BEFORE the split is frozen (RW-02). See 02-CONTEXT.md for full rework rationale. | — Applied in 02-02 |
 
 ---
-*Last updated: 2026-05-15 — Phase 2 complete (three-source pixel-label dataset pipeline + shared tiler)*
+*Last updated: 2026-05-16 — Phase 2 rework: D-06/D-17/D-18 REVERSED (GCS-canonical synthetic pipeline); see 02-02-SUMMARY.md*
