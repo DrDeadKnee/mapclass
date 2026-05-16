@@ -28,6 +28,16 @@ from pickle import UnpicklingError
 
 import torch
 
+# gcsfs is not installed on the planning VM.  Import it lazily at module level
+# with a try/except so that:
+#  (a) the module can be imported offline without gcsfs installed, and
+#  (b) tests can patch `seg.gcs_checkpoint.gcsfs.GCSFileSystem` because the
+#      attribute ``gcsfs`` is present on the module even when gcsfs is absent.
+try:
+    import gcsfs  # type: ignore[import]
+except ModuleNotFoundError:
+    gcsfs = None  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -104,7 +114,12 @@ def gcs_save_checkpoint(config_name: str, step: int, state: dict) -> str:
     Returns:
         The full ``gs://`` path of the written object.
     """
-    import gcsfs  # lazy — gcsfs absent on the planning VM
+    # Use the module-level gcsfs reference (patched in tests; real on GPU host).
+    if gcsfs is None:
+        raise ImportError(
+            "gcsfs is not installed.  Install it on the GPU training host with: "
+            "pip install gcsfs"
+        )
 
     validate_config_name(config_name)  # defence-in-depth
 
@@ -146,7 +161,12 @@ def gcs_latest_checkpoint(config_name: str) -> tuple[int, dict | None]:
     Returns:
         ``(step, state_dict)`` on success, ``(0, None)`` if nothing loadable.
     """
-    import gcsfs  # lazy — gcsfs absent on the planning VM
+    # Use the module-level gcsfs reference (patched in tests; real on GPU host).
+    if gcsfs is None:
+        raise ImportError(
+            "gcsfs is not installed.  Install it on the GPU training host with: "
+            "pip install gcsfs"
+        )
 
     fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
     # ls() returns bare paths without the gs:// prefix, e.g.
