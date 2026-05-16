@@ -103,7 +103,7 @@ Plans:
 **Wave 1**
 
 - [x] 02-01-PLAN.md — Wave 0: scripts/gcs_io.py (_GCSWriter/pull/verify/validate_manifest) + offline test infra
-- [ ] 02-02-PLAN.md — Wave 1: synthetic GCS migration — tiling.py 32-thread _GCSWriter (RW-01), manifest-before-split hard-fail (RW-02), GCS split.json (D-17/D-18 reversed), PROJECT.md update
+- [x] 02-02-PLAN.md — Wave 1: synthetic GCS migration — tiling.py 32-thread _GCSWriter (RW-01), manifest-before-split hard-fail (RW-02), GCS split.json (D-17/D-18 reversed), PROJECT.md update
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -236,7 +236,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
-| 2. Build a dataset of pixel-label pairs | 1/5 | In Progress|  |
+| 2. Build a dataset of pixel-label pairs | 2/5 | In Progress|  |
 | 3. Build a dense semantic segmentation pipeline | 5/5 | Complete | 2026-05-16 |
 | 4. Fine-tune and evaluate the segmentation model | 0/TBD | Not started | - |
 | 5. Explore, select, and publish the segmentation model | 0/TBD | Not started | - |
