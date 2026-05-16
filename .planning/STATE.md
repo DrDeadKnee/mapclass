@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
+status: ready_to_plan
 stopped_at: Phase 4 context gathered (reshaped; Phase 5 split out)
 last_updated: "2026-05-16T02:21:42.674Z"
-last_activity: 2026-05-16 -- Phase 02 online integration gate passed 6/6
+last_activity: 2026-05-16 -- Phase 4 context gathered (reshaped); Phase 5 split out
 progress:
   total_phases: 5
-  completed_phases: 2
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  completed_phases: 3
+  total_plans: 11
+  completed_plans: 11
+  percent: 60
 ---
 
 # Project State
@@ -23,20 +23,22 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 **Core value:** A trained segmentation model on HuggingFace producing dense per-pixel
 land-cover and topography predictions on illustrated regional maps, evaluated by
 joint per-pixel NLL on held-out synthetic maps.
-**Current focus:** Phase 04 — fine-tune, evaluate (joint NLL), upload to HuggingFace
+**Current focus:** Phase 04 (reshaped) — fine-tune + evaluate (joint NLL) +
+comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 03 (build-a-dense-semantic-segmentation-pipeline) — COMPLETE
-Plan: 5 of 5 complete
-Status: Phases 1–3 complete; Phase 4 not yet planned (no 04 dir / CONTEXT.md)
-Last activity: 2026-05-16 -- Phase 02 online integration gate passed 6/6
-working branch `phase1.5`; Phase 3 fully executed + UAT accepted-on-evidence
-(03-UAT.md, 5/5). Phase 2 online integration gate now 6/6 — stale David Rumsey
-test fixtures (RUMSEY~8~1~24694~890095, retired upstream) repointed to
-RUMSEY~8~1~292315~90066993 in commit `dc4f585` (pushed to origin/phase1.5).
+Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — CONTEXT GATHERED
+Plan: not yet planned (04-CONTEXT.md written, ready for /gsd-plan-phase 4)
+Status: Phases 1–3 complete; Phase 4 reshaped (train+eval+report only),
+new Phase 5 owns deliverable selection + HuggingFace publish (user decision
+2026-05-16, see 04-CONTEXT.md `<domain>`). Roadmap updated to 5 phases.
+Last activity: 2026-05-16 -- Phase 4 context gathered; Phase 5 split out
+working branch `phase1.5`; Phase 3 executed + UAT accepted (03-UAT.md 5/5);
+Phase 2 online gate 6/6 (fixture fix dc4f585, pushed). NOTE: unpushed local
+commits on phase1.5 (closeout docs 176da3c onward) — `git push` when ready.
 
-Progress: [███████░░░] 75% (Phases 1–3 of 4 complete)
+Progress: [██████░░░░] 60% (Phases 1–3 of 5 complete)
 
 ## Performance Metrics
 
