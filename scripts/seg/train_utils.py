@@ -293,7 +293,7 @@ def train_step_variant_a(
     optimizer.zero_grad()
 
     prob_cache: dict[str, Tensor] = {}
-    total_loss = torch.tensor(0.0, device=device)
+    total_loss = 0.0
 
     def _step(tile: dict, parent: "dict | None") -> None:
         nonlocal total_loss
@@ -322,17 +322,23 @@ def train_step_variant_a(
         tile_loss = weighted_joint_loss(
             lc_logits, topo_logits, lc_targets, topo_targets, [sw], device
         )
-        total_loss = total_loss + tile_loss
+        # Backward per tile so only ONE tile's autograd graph is ever live.
+        # The T-04-03 detach already isolates each tile's graph, so summing
+        # the losses then a single backward is mathematically identical to
+        # accumulating each tile_loss.backward() into .grad — but the deferred
+        # form kept all 21 graphs resident at once (CPU OOM). zero_grad() was
+        # called once above; grads accumulate across tiles as intended.
+        tile_loss.backward()
+        total_loss += float(tile_loss.detach())
 
         for cid in tile.get("children", []):
             _step(by_id[cid], tile)
 
     _step(root, None)
 
-    total_loss.backward()
     optimizer.step()
 
-    return total_loss.item()
+    return total_loss
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +379,7 @@ def train_step_variant_b(
     optimizer.zero_grad()
 
     prob_cache: dict[str, Tensor] = {}
-    total_loss = torch.tensor(0.0, device=device)
+    total_loss = 0.0
 
     def _step(tile: dict, parent: "dict | None") -> None:
         nonlocal total_loss
@@ -407,14 +413,17 @@ def train_step_variant_b(
         tile_loss = weighted_joint_loss(
             lc_logits, topo_logits, lc_targets, topo_targets, [sw], device
         )
-        total_loss = total_loss + tile_loss
+        # Backward per tile (see Variant A note): bounds peak memory to one
+        # tile's graph instead of all 21. Grads accumulate into .grad exactly
+        # as the prior single sum-of-losses backward did.
+        tile_loss.backward()
+        total_loss += float(tile_loss.detach())
 
         for cid in tile.get("children", []):
             _step(by_id[cid], tile)
 
     _step(root, None)
 
-    total_loss.backward()
     optimizer.step()
 
-    return total_loss.item()
+    return total_loss
