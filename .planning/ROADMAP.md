@@ -107,8 +107,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-03-PLAN.md — Wave 2: historical pipeline GCS-canonical (RW-04)
-- [ ] 02-04-PLAN.md — Wave 2: satellite pipeline GCS-canonical (RW-04)
+- [x] 02-03-PLAN.md — Wave 2: historical pipeline GCS-canonical (RW-04)
+- [x] 02-04-PLAN.md — Wave 2: satellite pipeline GCS-canonical (RW-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -236,7 +236,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fine-tune PaliGemma-3B on illustrated map terrain symbols | 1/1 | Complete | (pre-bootstrap) |
-| 2. Build a dataset of pixel-label pairs | 2/5 | In Progress|  |
+| 2. Build a dataset of pixel-label pairs | 4/5 | In Progress|  |
 | 3. Build a dense semantic segmentation pipeline | 5/5 | Complete | 2026-05-16 |
 | 4. Fine-tune and evaluate the segmentation model | 0/TBD | Not started | - |
 | 5. Explore, select, and publish the segmentation model | 0/TBD | Not started | - |
