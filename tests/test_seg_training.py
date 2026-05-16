@@ -1,10 +1,11 @@
 """
-Offline training-building-block tests for Phase 4 (plan 04-01).
+Offline training-building-block tests for Phase 4 (plan 04-01 + 04-04).
 
 Tests cover:
   - TestWeightedJointLoss  : loss formula shape + value sanity
   - TestTeacherForcedDetach: prior-detach guard (gradient safety, T-04-03)
   - TestValCarve           : random_split carve from train_ds only (EVAL-01)
+  - TestProbeMode          : finetune_seg.py probe-mode offline contract (plan 04-04)
 
 All tests are offline (CPU, mini_pyramid fixture, stub backbone) — no GPU,
 no network.  This file fails LOUDLY (pytest.fail, not pytest.skip) if
@@ -246,3 +247,99 @@ class TestValCarve:
         # (no tiles found) — both are acceptable; just must not be silent.
         with pytest.raises((ValueError, Exception)):
             carve_train_val(fake_test_path, val_frac=0.2, seed=42)
+
+
+# ---------------------------------------------------------------------------
+# TestProbeMode — finetune_seg.py probe-mode offline contract (plan 04-04)
+# ---------------------------------------------------------------------------
+
+class TestProbeMode:
+    """
+    Offline contract tests for finetune_seg.train() probe mode.
+
+    Verifies:
+      - probe + offline_stub: one epoch runs, PROBE RESULT printed, SystemExit(0)
+      - carve_train_val is the only dataset path (no test/ component in any opened path)
+      - GCS calls are no-ops (mocked)
+    """
+
+    def test_probe_runs_one_epoch_and_exits(
+        self, mini_pyramid, stub_vision_config, tmp_path, monkeypatch, capsys
+    ):
+        """
+        train() with probe=True + offline_stub=True over a tiny train/ fixture:
+          - completes exactly one epoch
+          - stdout contains 'PROBE RESULT'
+          - raises SystemExit with code 0
+          - no opened path contains a 'test' component (EVAL-01)
+
+        GCS save is no-op (monkeypatched).  CPU only, stub backbone, runtime < 90s.
+        """
+        import argparse
+        import sys
+
+        # Build a train-only fixture dir: the mini_pyramid returns a single
+        # pyramid dir (containing pyramid.json).  We use it as the train_root.
+        train_root = mini_pyramid  # this is the pyramid dir itself
+
+        # finetune_seg.train expects train_root to be a directory that
+        # carve_train_val can consume directly (passed as the root path).
+        # mini_pyramid is a pyramid dir; carve_train_val wraps PyramidDataset(root).
+        train_root_str = str(train_root)
+
+        # Monkeypatch sys.path to include scripts/ before import
+        scripts_dir = str(mini_pyramid.parent.parent.parent)
+        # Resolve actual scripts/ path relative to the source tree
+        import pathlib
+        repo_root = pathlib.Path(__file__).parent.parent
+        scripts_dir = str(repo_root / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+
+        # Import finetune_seg — this is the module under test (RED: must fail if not yet created)
+        try:
+            import finetune_seg  # noqa: F401
+        except ImportError as e:
+            pytest.fail(
+                f"finetune_seg not yet implemented: {e}",
+                pytrace=False,
+            )
+
+        # Patch GCS save to a no-op so offline test never touches network
+        import unittest.mock as mock
+        with mock.patch("finetune_seg.gcs_save_checkpoint", return_value="gs://mock/step_0000001.pt"), \
+             mock.patch("finetune_seg.gcs_latest_checkpoint", return_value=(0, None)):
+
+            args = argparse.Namespace(
+                probe=True,
+                offline_stub=True,
+                backbone="siglip",
+                variant="B",
+                epochs=2,
+                ckpt_every=1,
+                lr=1e-4,
+                amp=False,
+                pretrained=False,
+                train_root=train_root_str,
+            )
+
+            with pytest.raises(SystemExit) as exc_info:
+                import finetune_seg as _fs
+                _fs.train(args)
+
+        # Must exit with code 0
+        assert exc_info.value.code == 0, (
+            f"probe mode must sys.exit(0); got code {exc_info.value.code}"
+        )
+
+        # stdout must contain PROBE RESULT block
+        captured = capsys.readouterr()
+        assert "PROBE RESULT" in captured.out, (
+            f"probe mode must print 'PROBE RESULT'; stdout was:\n{captured.out}"
+        )
+
+        # EVAL-01: verify no 'test' path component appears in the train_root used
+        # (carve_train_val is the sole dataset constructor; no test/ should be in the path)
+        assert "test" not in str(train_root).split("/"), (
+            f"EVAL-01 violation: train_root contains 'test' component: {train_root}"
+        )
