@@ -143,7 +143,16 @@ def _process_one(
                     for local writes.  Example:
                     "mapclass-training-northeast1/data/historical/dataset"
     """
-    sample_name = tif.stem
+    # download_georeferenced writes every plate as <id>__plate<i>/source.tif,
+    # so tif.stem is the constant "source" for all maps — using it collapses
+    # every map into one output dir and the _BUILD_COMPLETE sentinel then skips
+    # all but the first. The per-plate parent dir name is the unique identity.
+    # Manually-placed GeoTIFFs sit directly in raw_dir/*.tif (no plate dir);
+    # for those the stem is the intended, user-chosen name.
+    if tif.stem == "source" and tif.parent.name not in ("", "georeferenced"):
+        sample_name = tif.parent.name
+    else:
+        sample_name = tif.stem
     if gcs_out_prefix is not None:
         # Sample dir lives in local scratch for reads (hist_label.make_labels
         # writes the schema files locally); tiling writes to GCS.
@@ -186,7 +195,10 @@ def _process_one(
 
 def cmd_build(raw_dir: "Path | str", out_dir: "Path | str", workers: int) -> None:
     raw_dir = Path(raw_dir)
-    tifs = sorted((raw_dir / "georeferenced").glob("*.tif"))
+    # download_georeferenced writes raw_dir/georeferenced/<id>__plate<i>/source.tif
+    # (one per-map dir deep), so a non-recursive *.tif glob on georeferenced/
+    # never matches. Recurse to find every plate's source.tif.
+    tifs = sorted((raw_dir / "georeferenced").rglob("*.tif"))
     # Also pick up any manually registered GeoTIFFs placed directly in raw_dir
     tifs += sorted(raw_dir.glob("*.tif"))
     tifs = list(dict.fromkeys(tifs))  # deduplicate, preserve order

@@ -137,7 +137,11 @@ def cmd_coverage_scan(summary_path) -> None:
         ) as tmp:
             tmp_path = Path(tmp.name)
         try:
-            summary = coverage.build_summary(tmp_path)
+            # tmp_path was just created by NamedTemporaryFile and is an empty
+            # file; without force=True coverage.build_summary mistakes it for a
+            # cached summary and crashes on json.loads(""). The local temp is
+            # scratch (the only cache is the GCS object), so always rebuild.
+            summary = coverage.build_summary(tmp_path, force=True)
             # Pipe the produced JSON bytes to GCS (fs.pipe_file is atomic).
             gcs_dest = _bare(summary_path_str)
             fs.pipe_file(gcs_dest, json.dumps(summary).encode())
@@ -238,9 +242,36 @@ def cmd_search(
     fs=None,
 ) -> None:
     print("=== Region pick + STAC resolve ===")
-    # coverage.pick_regions may need a local summary if summary is on GCS;
-    # for the search command a local file is fine as a Path cache.
-    regions = coverage.pick_regions(n_regions, seed, summary_path=summary_path)
+    # coverage.pick_regions / build_summary are NOT GCS-aware: they call
+    # Path(summary_path).exists(), which is always False for a gs:// URI, so
+    # passing the GCS path through silently triggers a full global WorldCover
+    # rescan (~20k tiles) instead of reusing the cached summary. Pull the GCS
+    # object to a local temp file and hand pick_regions that local path.
+    summary_path_str = str(summary_path)
+    _tmp_summary = None
+    if _is_gcs_path(summary_path_str):
+        fs_dl = fs or _make_fs()
+        gcs_src = _bare(summary_path_str)
+        if not fs_dl.exists(gcs_src):
+            raise FileNotFoundError(
+                f"Coverage summary not found at {summary_path_str}. "
+                f"Run `build_satellite_dataset.py coverage-scan` first."
+            )
+        with tempfile.NamedTemporaryFile(
+            suffix="_coverage_summary.json", delete=False
+        ) as tmp:
+            _tmp_summary = Path(tmp.name)
+        _tmp_summary.write_bytes(fs_dl.cat(gcs_src))
+        local_summary = _tmp_summary
+    else:
+        local_summary = Path(summary_path)
+    try:
+        regions = coverage.pick_regions(
+            n_regions, seed, summary_path=local_summary
+        )
+    finally:
+        if _tmp_summary is not None:
+            _tmp_summary.unlink(missing_ok=True)
     print(f"  Picked {len(regions)} class-diverse regions (seed={seed})")
     cmd_search_regions(regions, manifest_path, max_cloud=max_cloud, fs=fs)
 
