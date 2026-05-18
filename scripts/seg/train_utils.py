@@ -125,15 +125,22 @@ def weighted_joint_loss(
             float(sw["topography_weight"]), dtype=torch.float32, device=device
         )
 
+        # ignore_index=255: label.py already emits 255 (LC = NODATA/void,
+        # topo = water — no valid slope class). Without this, those pixels
+        # are out-of-range class indices for 9-/3-way CE and trigger a
+        # device-side index assert. Mirrors evaluate_seg.py's
+        # `valid = (lc_gt < 9) & (topo_gt < 3)` eval mask.
         lc_loss = F.cross_entropy(
             lc_logits[i:i + 1],
             lc_targets[i:i + 1],
             weight=lc_class_w,
+            ignore_index=255,
             reduction="mean",
         )
         topo_loss = F.cross_entropy(
             topo_logits[i:i + 1],
             topo_targets[i:i + 1],
+            ignore_index=255,
             reduction="mean",
         ) * topo_w
 
