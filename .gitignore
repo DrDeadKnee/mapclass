@@ -10,6 +10,10 @@
 # Local Rumsey image byte cache (config.LOCAL_IMAGE_CACHE_DIR; runtime artifact)
 /.cache/
 
+# Conda-materialized Python 3.10 base interpreter (developer artifact; the env
+# itself is plain venv+pip per CLAUDE.md — conda only sources the interpreter)
+/.py310base/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
