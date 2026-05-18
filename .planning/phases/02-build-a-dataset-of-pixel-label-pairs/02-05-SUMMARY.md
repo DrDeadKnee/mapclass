@@ -1,149 +1,206 @@
 ---
 phase: 02-build-a-dataset-of-pixel-label-pairs
 plan: 05
-subsystem: dataset-tiling
-tags: [tiling, nested-pyramid, eval-01, multi-scale, integration]
-requires: [02-01, 02-02, 02-03, 02-04]
+subsystem: dataset-pipeline
+tags: [gcs, gcsfs, sentinel, pull-once, rw-03, oq1, oq2, finetune, evaluate]
+
+# Dependency graph
+requires:
+  - phase: 02-build-a-dataset-of-pixel-label-pairs
+    provides: "GCS-canonical build scripts (02-01..02-04) — gcs_io, build_dataset, build_historical, build_satellite, tiling"
+  - phase: 04-train-and-evaluate
+    provides: "finetune_seg.py and evaluate_seg.py consumer scripts"
 provides:
-  - scripts/tiling.py (shared nested-pyramid decomposer + per-pyramid manifest)
-  - tiler integrated into all 3 build pipelines
-affects:
-  - scripts/build_historical_dataset.py
-  - scripts/build_dataset.py
-  - scripts/build_satellite_dataset.py
+  - "_BUILD_COMPLETE sentinel helpers (mark_build_complete, is_build_complete) in gcs_io.py"
+  - "family_subset_prefix OQ2 layout constant in gcs_io.py"
+  - "Sentinel guard in build_dataset.py, build_historical_dataset.py, build_satellite_dataset.py"
+  - "RW-03 pull-once + verify in finetune_seg.py (before gcs_latest_checkpoint)"
+  - "RW-03 pull-once + verify in evaluate_seg.py (before load_test_pyramid_dirs)"
+  - "--scratch-dir argparse arg in both scripts"
+  - "evaluate(args) public API in evaluate_seg.py"
+  - "02-HUMAN-UAT.md blocking gate for Azgaar regeneration + GCS upload"
+affects: ["04-train-and-evaluate", "05-publish"]
+
+# Tech tracking
 tech-stack:
   added: []
   patterns:
-    - "PIL Image open/crop/save per-map-dir I/O (copied from scripts/label.py)"
-    - "per-pyramid subdir + pyramid.json manifest (RESEARCH Open-Q3)"
-    - "default out_root = <map_dir>/pyramids keeps pyramids inside source subtree"
+    - "_BUILD_COMPLETE sentinel written as last GCS write after tiling completes (OQ1)"
+    - "is_build_complete() gates skip — partial prefix (sentinel absent) is rebuilt, not skipped (Pitfall R-2)"
+    - "family_subset_prefix(family, subset) returns canonical bare GCS path (OQ2)"
+    - "try/except ImportError guards all gcs_io imports in training/eval scripts"
+    - "pull_dataset_from_gcs + verify_pull precede carve_train_val / load_test_pyramid_dirs (RW-03)"
+    - "evaluate(args) separated from main() for testability"
+
 key-files:
   created:
-    - scripts/tiling.py
-    - .planning/phases/02-build-a-dataset-of-pixel-label-pairs/deferred-items.md
+    - "scripts/gcs_io.py (extended: _BUILD_COMPLETE, mark_build_complete, is_build_complete, family_subset_prefix)"
+    - "tests/test_pull_once.py (torch-free structural tests for RW-03 pull-once)"
+    - ".planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-HUMAN-UAT.md"
   modified:
-    - tests/test_tiling.py
-    - scripts/build_historical_dataset.py
-    - scripts/build_dataset.py
-    - scripts/build_satellite_dataset.py
-decisions:
-  - "Off-edge fraction is AREA-based (1 - on_area/896^2), not 1-D, so a corner pyramid clipped on both axes is judged by true footprint loss (D-09)"
-  - "Pyramid id = grid row/col (origin // stride) — collision-free per source map (T-02-17)"
-  - "Tiler defaults out_root to <map_dir>/pyramids so synthetic pyramids never cross the frozen train/test boundary (EVAL-01, T-02-15)"
-metrics:
-  duration: ~19m
-  completed: 2026-05-15
-  tasks: 2
-  files: 6
+    - "scripts/build_dataset.py (sentinel guard + mark in build_one_source)"
+    - "scripts/build_historical_dataset.py (sentinel guard + mark in _process_one)"
+    - "scripts/build_satellite_dataset.py (sentinel guard + mark in _process_one)"
+    - "scripts/finetune_seg.py (pull-once block + --scratch-dir arg)"
+    - "scripts/evaluate_seg.py (pull-once block + --scratch-dir arg + evaluate() public API)"
+    - "tests/test_gcs_io.py (Task 1 TDD tests for sentinel and layout)"
+
+key-decisions:
+  - "OQ1 LOCKED: _BUILD_COMPLETE sentinel written last, checked before skip — partial builds are always rebuilt (Pitfall R-2 / T-02-40)"
+  - "OQ2 LOCKED: family-rooted GCS layout (gs://.../data/{synthetic,historical,satellite}/{train,test}/); merging at pull-once time; split.json stays synthetic-only (EVAL-01)"
+  - "evaluate_seg.py pulls ONLY the synthetic test subset (EVAL-01 hold-out is synthetic-only)"
+  - "test_pull_once.py uses source-text structural assertions (torch-free) for offline CI compatibility"
+
+patterns-established:
+  - "sentinel-last write pattern: tiling.tile() → mark_build_complete() — always in that order"
+  - "import guard: try/except ImportError at module-level for gcs_io, fallback to None"
+  - "evaluate() + main() separation in CLI scripts for test callability"
+
+requirements-completed: [PHASE-02, EVAL-01]
+
+# Metrics
+duration: 45min
+completed: 2026-05-16
 ---
 
-# Phase 2 Plan 05: Shared multi-scale nested-pyramid tiler Summary
+# Phase 02 Plan 05: Consumer Pull-Once + Sentinel Summary
 
-Strict-2×2-nested 1×896 + 4×448 + 16×224 pyramid tiler on a stride-448 grid
-with area-based >50%-off-edge drop (D-06..D-09), wired into all three build
-pipelines while preserving the synthetic frozen train/test split through tiling.
+**_BUILD_COMPLETE sentinel (OQ1), family-rooted layout (OQ2), and RW-03 pull-once wiring in finetune_seg.py + evaluate_seg.py — GCS pipeline now end-to-end offline-verified; blocked at Azgaar regeneration human gate**
 
-## What Was Built
+## Performance
 
-**Task 1 — `scripts/tiling.py` (TDD: RED → GREEN):**
-- `enumerate_pyramids(W, H)`: 896-px origins on a stride-448 grid anchored at
-  the source top-left; drops a pyramid only when the **area** of its 896×896
-  footprint lying off the source exceeds 50% (D-09 — a footprint exactly 50%
-  or less off IS written).
-- `tile(map_dir, out_root=None)`: reads the completed per-map dir
-  (`image.png` + `land_cover.png` + `topography.png` + `sample_weights.json`),
-  derives `(W,H)` from `image.png`, enumerates kept pyramids, and writes one
-  sub-directory per pyramid containing: the 21 cropped PNG triplets (1×896,
-  4×448 in strict 2×2, 16×224 in strict 2×2 within each 448), a `pyramid.json`
-  manifest listing all 21 tile relative paths + explicit parent→child indices,
-  and a **byte-identical** copy of the source `sample_weights.json`.
-- Deterministic collision-free pyramid id `py_r{row}_c{col}` from the
-  stride-grid cell (T-02-17).
-- Internal guard: a per-map dir missing any of the 4 required files is skipped
-  + logged, never tiled (T-02-16).
-- Six geometry/weight tests in `tests/test_tiling.py`: tile-count, nested
-  alignment, stride-448, intra-pyramid disjointness, edge-drop, weight
-  propagation — all offline (small synthetic PNGs under `tmp_path`).
+- **Duration:** ~45 min
+- **Started:** 2026-05-16T22:30:00Z
+- **Completed:** 2026-05-16T23:15:00Z (checkpoint: Task 3 — human gate)
+- **Tasks:** 2/3 completed (Task 3 is a blocking human gate — see 02-HUMAN-UAT.md)
+- **Files modified:** 9
 
-**Task 2 — tiler wired into all 3 build pipelines:**
-- `build_historical_dataset.py`: `tiling.tile(sample_dir)` in `_process_one`
-  after `hist_label.make_labels`.
-- `build_dataset.py` (synthetic): `tiling.tile(out)` after `write_sample_weights`
-  per `(source × style)` dir. `out` already lives under the train/ or test/
-  root the caller routed the whole source into, and the tiler defaults to
-  `out/pyramids` — so every pyramid of a held-out source stays test-side,
-  never crossing the frozen `split.json` boundary (EVAL-01, T-02-15).
-- `build_satellite_dataset.py`: `tiling.tile(sample_dir)` in `_process_one`
-  after `sat_weights.write_sample_weights`.
-- Each call site adds a pre-tiling missing-file guard (skip + log) so a
-  partially-failed map never produces a corrupt pyramid tree (T-02-16).
-- `test_split_subtree_preserved` (added in Task 1's test file) asserts a
-  synthetic map under `test/` produces its pyramids under `test/` only.
+## Accomplishments
 
-## Verification Results
+- Added `_BUILD_COMPLETE` sentinel to `gcs_io.py` with `mark_build_complete()` +
+  `is_build_complete()` helpers; all three build scripts use sentinel to gate skip
+  and write it last after tiling (OQ1 resolved, Pitfall R-2 / T-02-40 mitigated).
+- Added `family_subset_prefix(family, subset)` to `gcs_io.py` encoding the OQ2
+  family-rooted GCS layout decision (LOCKED 2026-05-16).
+- Wired RW-03 pull-once into `finetune_seg.py` (pull train subset before
+  `gcs_latest_checkpoint` resume) and `evaluate_seg.py` (pull test subset before
+  `load_test_pyramid_dirs`), both with `--scratch-dir` arg and `ImportError` fallback.
+- Wrote `02-HUMAN-UAT.md` with full step-by-step Azgaar regeneration + manifest
+  authoring + GCS upload gate, including the post-upload acceptance run.
 
-- `pytest tests/test_tiling.py -x -q --ignore=tests/integration` — **7 passed**
-  (6 geometry/weight + split-subtree-preserved).
-- Full offline unit suite `pytest tests/ --ignore=tests/integration` —
-  **50 passed**, no regressions in any Wave-1/2 module.
-- Plan verify command `grep -l tiling ... | wc -l == 3 && pytest tests/test_tiling.py`
-  — passes (3/3 build scripts reference `tiling`; call positioned after
-  `make_labels`/`write_sample_weights` in each).
-- All 4 affected modules import cleanly.
+## Task Commits
+
+1. **Task 1 RED: _BUILD_COMPLETE + layout tests** - `9549627` (test)
+2. **Task 1 GREEN: sentinel + OQ2 in gcs_io + all build scripts** - `e462a43` (feat)
+3. **Task 2 RED: pull-once structural tests** - `54bf0fd` (test)
+4. **Task 2 GREEN: pull-once in finetune_seg + evaluate_seg** - `9c7ef61` (feat)
+
+Task 3 (checkpoint:human-verify) — not committed; gate is in progress.
+
+## Files Created/Modified
+
+- `scripts/gcs_io.py` — Extended with `_BUILD_COMPLETE`, `mark_build_complete`, `is_build_complete`, `family_subset_prefix`; module docstring documents OQ1 + OQ2 decisions
+- `scripts/build_dataset.py` — `is_build_complete` skip gate + `mark_build_complete` after tiling in `build_one_source`
+- `scripts/build_historical_dataset.py` — Same sentinel guard + mark in `_process_one` GCS path
+- `scripts/build_satellite_dataset.py` — Same sentinel guard + mark in `_process_one` GCS path
+- `scripts/finetune_seg.py` — RW-03 pull-once block before `gcs_latest_checkpoint`; `--scratch-dir` argparse arg; try/except ImportError fallback
+- `scripts/evaluate_seg.py` — RW-03 pull-once block before `load_test_pyramid_dirs`; `--scratch-dir` argparse arg; refactored `evaluate(args)` public API; try/except ImportError fallback
+- `tests/test_gcs_io.py` — TDD tests for `mark_build_complete`, `is_build_complete`, `family_subset_prefix`
+- `tests/test_pull_once.py` — New torch-free structural tests for pull-once wiring
+- `.planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-HUMAN-UAT.md` — Blocking gate document
+
+## Decisions Made
+
+- **OQ1 LOCKED:** `_BUILD_COMPLETE` sentinel written as last GCS object per map-dir;
+  `is_build_complete()` gates skip — a prefix with existing objects but no sentinel
+  is treated as a partial/aborted build and rebuilt (Pitfall R-2 / T-02-40).
+- **OQ2 LOCKED:** Family-rooted GCS layout. Each build script writes to its own
+  family prefix; pull-once merges them into a local scratch root. `split.json`
+  stays synthetic-only at `gs://.../data/synthetic/split.json` (EVAL-01 unchanged).
+- **Torch-free tests:** RW-03 pull-once structural contracts tested via source-text
+  inspection (`test_pull_once.py`) rather than mocked runtime execution, to remain
+  compatible with the planning VM (no torch/GPU).
 
 ## Deviations from Plan
 
 ### Auto-fixed Issues
 
-**1. [Rule 1 - Bug] RED test fixtures encoded incorrect D-09 expectations**
-- **Found during:** Task 1 GREEN phase.
-- **Issue:** The initial `test_stride_448` and `test_edge_drop` fixtures
-  hard-coded origin sets / drop arithmetic that contradicted the locked
-  area-based D-09 semantics (e.g. expected only `{0,448,896}` origins on a
-  1792-px map, but the 1344 origin is exactly 50% off and is correctly kept;
-  the narrow-map drop case was actually only 25% off → kept).
-- **Fix:** Recomputed every fixture against the area-based off-fraction
-  (`1 - on_area/896²`); `test_stride_448` now asserts the load-bearing
-  property (adjacent origins differ by exactly 448 + top-left anchored)
-  instead of a brittle hard-coded list; `test_edge_drop` uses explicitly
-  worked examples (1244-px → x=448 kept @11% off, x=896 dropped @61% off;
-  896-px → x=448 kept at exactly 50% off — the D-09 boundary).
-- **Files modified:** `tests/test_tiling.py`
-- **Commit:** 17aacc7 (folded into the GREEN implementation commit, since the
-  RED expectations were the artifact being corrected to the spec).
+**1. [Rule 2 - Missing Critical] Torch-free test file for pull-once (test_pull_once.py)**
+- **Found during:** Task 2 RED phase
+- **Issue:** `test_seg_eval.py` imports `torch` at module level; can't be collected
+  on the planning VM. Adding evaluate_seg pull-once tests there would be unreachable.
+  `test_seg_training.py` also fails on torch-requiring tests, though it can be collected.
+- **Fix:** Created `tests/test_pull_once.py` with structural/source-text tests that
+  run without torch. Tests verify: `--scratch-dir` arg present, `pull_dataset_from_gcs(`
+  call precedes `gcs_latest_checkpoint(` / `load_test_pyramid_dirs(`, `ImportError`
+  fallback present.
+- **Files modified:** `tests/test_pull_once.py` (created), `tests/test_seg_training.py`
+  (cleanup), `tests/test_seg_eval.py` (cleanup)
+- **Commit:** `54bf0fd` (RED), `9c7ef61` (GREEN)
 
-## Out-of-Scope / Deferred
+## Issues Encountered
 
-- **Integration phase gate (`pytest tests/integration -m integration`) not
-  runnable here.** All 6 integration tests are *online* network tests
-  (Allmaps / IIIF / Rumsey LUNA / Sentinel-2 STAC / `s3://sentinel-cogs`)
-  that hang without network (SIGTERM, exit 143). They exercise Wave-1/2
-  fetch/search code, not the 02-05 tiler (pure offline geometry, no network
-  code touched). Logged in
-  `.planning/phases/02-build-a-dataset-of-pixel-label-pairs/deferred-items.md`
-  for the verifier to run in a network-enabled environment.
+- Test position assertions using `src.index()` initially matched docstring/comment
+  occurrences (e.g., `gcs_latest_checkpoint()` appeared in function docstring before
+  the actual call). Fixed by removing the paren from the docstring and using call-site
+  patterns with `(` suffix; for evaluate_seg used `rfind()` to get the last occurrence
+  (the call, not the function definition).
 
-## Known Stubs
+## User Setup Required
 
-None — `scripts/tiling.py` is fully wired (real PNG crops, real manifest,
-real weight propagation) and invoked by all three live build pipelines.
+**External services require manual configuration.** See
+[02-HUMAN-UAT.md](./02-HUMAN-UAT.md) for:
 
-## Threat Coverage
+- Re-create ~100 Azgaar maps across ~12 continent templates
+- Name and export as `<template>_<NN>.geojson`
+- Author `raw/manifest.json` with all entries
+- Upload to `gs://mapclass-training-northeast1/data/synthetic/raw/`
+- Run `python scripts/build_dataset.py build` and confirm non-empty output
 
-- **T-02-15** (EVAL-01 leakage) — mitigated: tiler defaults to
-  `<map_dir>/pyramids`, keeping every pyramid inside the source's already-routed
-  train/ or test/ subtree; `test_split_subtree_preserved` enforces it.
-- **T-02-16** (corrupt pyramid from partial map) — mitigated: pre-tiling
-  missing-file guard at every call site + inside `tile()`.
-- **T-02-17** (pyramid id collision) — mitigated: deterministic grid-row/col
-  ids, unique per source map; per-pyramid subdir isolates outputs.
+## Next Phase Readiness
 
-No new threat surface introduced (offline filesystem transform only).
+- **Blocked:** Phase 4 `finetune_seg.py` + `evaluate_seg.py` pull-once cannot run
+  until the Azgaar regeneration + GCS upload gate (02-HUMAN-UAT.md) is completed.
+- **Ready:** Once the gate passes and `gs://.../data/synthetic/{train,test}/` +
+  `split.json` are populated, Phase 4 can proceed with `--scratch-dir` to pull the
+  dataset to local scratch before training/evaluation.
+
+---
+
+## Checkpoint: Human Gate Reached
+
+**Status:** STOPPED at Task 3 (checkpoint:human-verify, gate=blocking-human)
+
+The GCS-canonical Phase 2 pipeline (Waves 0-3) is fully implemented and
+offline-verified. The end-to-end build CANNOT run until the user re-creates the
+lost Azgaar source maps and uploads them to the canonical bucket.
+
+See `02-HUMAN-UAT.md` for the complete gate steps.
+
+**Resume signal:** Type "approved" once build completed cleanly and
+`gs://.../data/synthetic/{train,test}/` + `split.json` are populated.
+
+---
 
 ## Self-Check: PASSED
-- `scripts/tiling.py` — FOUND
-- `tests/test_tiling.py` — FOUND (7 tests, all green)
-- commit 86b21ea (RED) — FOUND
-- commit 17aacc7 (GREEN tiler) — FOUND
-- commit 95cd67f (wiring) — FOUND
-- `tiling` referenced in all 3 build scripts — VERIFIED (3/3)
+
+Files verified:
+- `scripts/gcs_io.py` — contains `_BUILD_COMPLETE`, `mark_build_complete`, `is_build_complete`, `family_subset_prefix`
+- `scripts/build_dataset.py` — contains `_BUILD_COMPLETE` (via `mark_build_complete`/`is_build_complete`)
+- `scripts/build_historical_dataset.py` — contains `_BUILD_COMPLETE` references
+- `scripts/build_satellite_dataset.py` — contains `_BUILD_COMPLETE` references
+- `scripts/finetune_seg.py` — contains `pull_dataset_from_gcs`, `--scratch-dir`
+- `scripts/evaluate_seg.py` — contains `pull_dataset_from_gcs`, `--scratch-dir`, `evaluate(args)`
+- `tests/test_pull_once.py` — 6 tests, all pass
+- `tests/test_gcs_io.py` — 21 tests, all pass
+- `.planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-HUMAN-UAT.md` — written
+
+Commits verified:
+- `9549627` — test(02-05): add failing tests for _BUILD_COMPLETE sentinel
+- `e462a43` — feat(02-05): _BUILD_COMPLETE sentinel + family_subset_prefix
+- `54bf0fd` — test(02-05): add failing tests for RW-03 pull-once (RED)
+- `9c7ef61` — feat(02-05): RW-03 pull-once + verify in finetune_seg + evaluate_seg
+
+---
+*Phase: 02-build-a-dataset-of-pixel-label-pairs*
+*Completed (partial — checkpoint): 2026-05-16*

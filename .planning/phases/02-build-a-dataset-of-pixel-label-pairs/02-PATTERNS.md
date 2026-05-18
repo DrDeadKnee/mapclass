@@ -1,303 +1,479 @@
-# Phase 2: Build a dataset of pixel-label pairs - Pattern Map
+# Phase 02: build-a-dataset-of-pixel-label-pairs — Pattern Map (REWORK)
 
-**Mapped:** 2026-05-15
-**Files analyzed:** 13 (5 new, 5 modified/refactored, 3 reused-verbatim)
-**Analogs found:** 13 / 13 (every new file has a strong in-repo analog — this phase is a parallel-track extension of an existing pipeline, not greenfield)
+**Mapped:** 2026-05-16
+**Files analyzed:** 7 (1 new, 6 modified)
+**Analogs found:** 7 / 7
+
+---
 
 ## File Classification
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
-|-------------------|------|-----------|----------------|---------------|
-| `scripts/historical/rumsey.py` | service (search/download) | request-response + file-I/O | itself (in-place refactor per D-01..D-05) | self / exact |
-| `scripts/historical/allmaps.py` | service (lookup) | request-response | itself (extend `lookup()` per A6/Pitfall 3) | self / exact |
-| `scripts/historical/iiif.py` | service (fetcher) | request-response → file-I/O | `historical/worldcover.py` (HTTP-fetch + retry) + `rumsey._get_json` (backoff) | role-match |
-| `scripts/historical/georef.py` | utility (transform) | transform | `historical/dem.py` (rasterio reproject/transform math) | role-match |
-| `scripts/build_historical_dataset.py` | orchestrator (CLI) | batch + event-driven | itself (re-wire `cmd_search` per D-04/D-05) | self / exact |
-| `scripts/satellite/coverage.py` | service (region picker) | transform + file-I/O | `historical/worldcover.py` (tile enumeration + remap) | role-match |
-| `scripts/satellite/stac.py` | service (search) | request-response | `historical/allmaps.py` (lookup + retry/backoff) | role-match |
-| `scripts/satellite/fetch.py` | service (fetcher) | streaming (COG byte-range) → file-I/O | `historical/worldcover.py` (`rasterio.open(url)` + window read) | exact (same GDAL VSI-CURL pattern) |
-| `scripts/build_satellite_dataset.py` | orchestrator (CLI) | batch | `scripts/build_historical_dataset.py` (sub-commands + threadpool) | exact |
-| `scripts/tiling.py` | utility (decomposer) | transform + file-I/O | `scripts/label.py` (per-map dir, Pillow I/O) — closest, but novel pyramid geometry | role-match (geometry is novel) |
-| `scripts/build_dataset.py` (synthetic) | orchestrator (CLI) | batch + file-I/O | itself (add split per D-15..D-18) + `build_historical_dataset.py` (sub-command shape) | self / exact |
-| `scripts/historical/label.py` | service (label gen) | transform → file-I/O | REUSED VERBATIM by satellite path (do not modify; weights locked line 40) | reuse |
-| `scripts/historical/{worldcover,dem}.py` | service (label gen) | streaming → transform | REUSED VERBATIM by satellite path | reuse |
+|---|---|---|---|---|
+| `scripts/gcs_io.py` | utility (GCS I/O shim) | file-I/O (streaming write + bulk read) | `scripts/seg/gcs_checkpoint.py` | exact — same bucket, same ADC auth, same gcsfs version |
+| `scripts/tiling.py` | utility (pyramid tiler) | file-I/O (write) | `scripts/tiling.py` (self — modify) | self-modify — 6 call sites identified |
+| `scripts/build_dataset.py` | service (orchestrator) | CRUD + file-I/O | `scripts/build_dataset.py` (self — modify) | self-modify — collision-guard + split-freeze logic preserved |
+| `scripts/build_historical_dataset.py` | service (orchestrator) | CRUD + file-I/O | `scripts/build_dataset.py` | role-match — identical tiling.tile() call site pattern |
+| `scripts/build_satellite_dataset.py` | service (orchestrator) | CRUD + file-I/O | `scripts/build_historical_dataset.py` | role-match — same ThreadPoolExecutor + tiling.tile() pattern |
+| `scripts/finetune_seg.py` | service (training loop) | request-response + file-I/O | `scripts/finetune_seg.py` (self) + `scripts/seg/gcs_checkpoint.py` | self-modify; GCS resume composing pattern from gcs_checkpoint.py |
+| `scripts/evaluate_seg.py` | service (eval harness) | request-response + file-I/O | `scripts/evaluate_seg.py` (self) + `scripts/seg/gcs_checkpoint.py` | self-modify; GCS fs pattern from gcs_checkpoint.py |
+
+---
 
 ## Pattern Assignments
 
-### `scripts/historical/rumsey.py` (service, in-place refactor — D-01..D-05)
+### `scripts/gcs_io.py` (NEW — utility, file-I/O streaming)
 
-**Analog:** itself. The WMS path is being deleted; the Allmaps path replaces it. Keep every pattern below; swap only the download body.
+**Analog:** `scripts/seg/gcs_checkpoint.py`
 
-**KEEP — module structure / constants** (lines 41–68): the `_LUNA_*`, `_MIN/MAX_DIAG_KM`, `_DATE_*`, `_BATCH_SIZE`, `_MAX_RETRIES`, `_BACKOFF_BASE`, `_MAP_TYPES` block is the template. Satellite constants should mirror this layout.
+This is the single most important analog. `gcs_io.py` reuses the ADC auth, lazy import, `GCS_PROJECT` constant, `fs.open()`, and `fs.pipe_file()` patterns from `gcs_checkpoint.py` verbatim.
 
-**KEEP — exponential backoff HTTP helper** (`_get_json`, lines 173–197):
+**Lazy-import pattern** (`gcs_checkpoint.py` lines 36–39):
 ```python
-def _get_json(url: str, params: dict) -> dict:
-    """GET with exponential-backoff retry on 429/503."""
-    for attempt in range(_MAX_RETRIES):
-        try:
-            resp = requests.get(url, params=params, headers=_LUNA_HEADERS, timeout=30)
-            if resp.status_code in (429, 503):
-                wait = _BACKOFF_BASE ** attempt
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            ...
-        except requests.RequestException as exc:
-            if attempt == _MAX_RETRIES - 1:
-                raise
-            time.sleep(_BACKOFF_BASE ** attempt)
+try:
+    import gcsfs  # type: ignore[import]
+except ModuleNotFoundError:
+    gcsfs = None  # type: ignore[assignment]
 ```
-This is the canonical retry shape — `iiif.py` and `satellite/stac.py` must copy it.
+Apply identically in `gcs_io.py`. Keeps the module importable on the planning VM (no gcsfs). Tests patch `gcs_io.gcsfs` the same way tests patch `seg.gcs_checkpoint.gcsfs`.
 
-**KEEP verbatim** — `search_maps` (204–288), `_richness_score` (140–170), `_field` (89–102), `_haversine_km`/`_bbox_diagonal_km` (75–86). CONTEXT explicitly says preserve `_richness_score` as-is.
-
-**DELETE per D-01** — `_wms_url` (105–118), `_parse_bbox` (121–137), `_download_wms_geotiff` (295–328). Dead code. Note `build_historical_dataset.py:59` also calls `rumsey._wms_url` — that call site must be removed in the same diff.
-
-**REWRITE — `download_georeferenced`** (331–368): replace WMS body with the Allmaps → IIIF → GeoTIFF flow. The drop-classification skeleton already lives in the current docstring (lines 336–342). New return contract should distinguish drop reasons for D-04/D-05 (e.g. return a `(path | None, status)` tuple or raise typed sentinels). The existing early-return-with-print idiom (lines 351–364) is the style to follow:
+**GCS project constant** (`gcs_checkpoint.py` line 45):
 ```python
-    if not (_MIN_DIAG_KM <= diag <= _MAX_DIAG_KM):
-        print(f"  {item_id}: diagonal {diag:.0f} km out of range, skipping")
-        return None
+GCS_PROJECT = "narrative-campaign"
 ```
-Use `manifest_url = map_meta.get("iiifManifest")` (confirmed available per the LUNA field inventory in the module docstring, lines 31–38) → `allmaps.lookup(manifest_url)` → scale GCPs → `georef` affine + GeoTIFF write.
+Copy verbatim into `gcs_io.py`. Add `BUCKET = "mapclass-training-northeast1"` and `DATA_PREFIX = "mapclass-training-northeast1/data"` alongside it.
 
-**REWRITE — `emit_manifest`** (375–440): keep the rich per-item dict (412–435) almost verbatim — it already emits `iiif_manifest`, `image_url`, `thumbnail_url`, `rumsey_page` which are exactly the v2 hand-off fields RESEARCH §finding-3 requires. Change only: drop the `_wms_url(item)` skip on line 385, and replace the hardcoded `"status": "needs_gcps"` (line 434) with the D-04 per-reason status (`not_in_allmaps` | `gcps_insufficient`).
+**fs instantiation pattern** (`gcs_checkpoint.py` lines 131, 171):
+```python
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+```
+`_GCSWriter.__init__` receives an already-instantiated `fs` (passed in, not created inside the shim). Build scripts instantiate once and pass to all `_GCSWriter` instances — do NOT re-instantiate per-tile (mirrors `gcs_checkpoint.py`'s single-instance-per-function discipline).
+
+**Atomic write pattern** (`gcs_checkpoint.py` lines 127–133):
+```python
+buf = io.BytesIO()
+torch.save(state, buf)
+buf.seek(0)
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+with fs.open(path, "wb") as fh:
+    fh.write(buf.read())
+```
+`_GCSWriter.open("wb")` delegates to `self._fs.open(self._prefix, mode)` — same `fs.open(path, "wb")` idiom. `_GCSWriter.write_bytes(data)` delegates to `self._fs.pipe_file(self._prefix, data)` for pre-buffered blobs.
+
+**fs.ls + bare-prefix pattern** (`gcs_checkpoint.py` lines 174–179):
+```python
+bare_prefix = f"mapclass-training-northeast1/models/{config_name}/"
+try:
+    files = fs.ls(bare_prefix)
+except FileNotFoundError:
+    return 0, None
+```
+`pull_dataset_from_gcs` and `verify_pull` use `fs.ls(bare_prefix)` (no `gs://`) following this exact idiom. All bare GCS paths in `gcs_io.py` strip the `gs://` prefix just as `gcs_checkpoint.py` does.
+
+**Test mock pattern** (`tests/test_seg_gcs.py` lines 76–121):
+```python
+class _MockGCSFileSystem:
+    _store: dict[str, bytes] = {}
+    def open(self, path, mode="rb"): ...
+    def ls(self, prefix): ...
+
+def _patch_gcsfs():
+    return mock.patch("seg.gcs_checkpoint.gcsfs", _MockGCSModule)
+```
+`tests/test_gcs_io.py` must use the identical pattern: a `_MockGCSFileSystem` with `pipe_file`, `open`, `ls`, `exists`, `cat`, and `get` methods; patched via `mock.patch("gcs_io.gcsfs", _MockGCSModule)`.
 
 ---
 
-### `scripts/historical/allmaps.py` (service, extend `lookup()` — Pitfall 3 / A6)
+### `scripts/tiling.py` (MODIFY — utility, file-I/O write)
 
-**Analog:** itself. Module is untracked in git — commit it in plan-01 (CONTEXT specifics).
+**Analog:** `scripts/tiling.py` (self-modification)
 
-**KEEP — retry/backoff + status-code switch** (`lookup`, lines 67–103). Same shape as `rumsey._get_json` but for the Allmaps endpoint; 404/500 → `None`, 429/503 → backoff-retry, other → raise `AllmapsLookupError`. This is the second instance of the canonical pattern.
+**All 6 current write/save call sites** — these are the exact lines the refactor must replace:
 
-**KEEP — typed error class** (lines 41–42): `class AllmapsLookupError(RuntimeError)`. Satellite STAC client should define an analogous `StacLookupError`.
+**Touch point 1 — `out_root` Path wrap** (`tiling.py` line 146):
+```python
+out = Path(out_root) if out_root is not None else map_dir / "pyramids"
+```
+New pattern: if `out_root` is already a `_GCSWriter` instance, use it directly; if `out_root` is a `str` starting with `gs://`, construct `_GCSWriter(fs, bare_path)`; if `None`, keep `map_dir / "pyramids"` as a local `Path`. The type-check branches on `isinstance(out_root, _GCSWriter)`.
 
-**KEEP — annotation parser** (`_parse_annotation`, 106–153): the defensive feature loop with per-feature `try/except (KeyError, TypeError, IndexError, ValueError): continue` (117–124) and the `len(gcps) < 3 → None` guard (125–126) are locked by the W3C contract. RESEARCH "Don't Hand-Roll" says keep this verbatim.
+**Touch point 2 — top-level mkdir** (`tiling.py` line 159):
+```python
+out.mkdir(parents=True, exist_ok=True)
+```
+`_GCSWriter.mkdir()` is a no-op (`self._fs.mkdirs(self._prefix, exist_ok=True)`). Call site unchanged syntactically.
 
-**CHANGE per A6/Pitfall 3** — line 100 `ann = items[0]` silently drops N-1 plates of multi-canvas atlases. Plan-01 decision (surface to user): either return `list[dict]` (all annotations, each → separate map) or filter atlases. Whichever — the `_parse_annotation` helper is reused per-item unchanged; only the `lookup()` aggregation changes.
+**Touch point 3 — per-pyramid mkdir** (`tiling.py` lines 165–166):
+```python
+pdir = out / pid
+pdir.mkdir(parents=True, exist_ok=True)
+```
+`_GCSWriter.__truediv__` returns a new `_GCSWriter`. Call site unchanged syntactically.
 
-**REUSE — geo helpers** `haversine_km` / `bbox_diagonal_km` (156–169): note these duplicate `rumsey._haversine_km`. Planner may consolidate, but not required.
+**Touch point 4 — three Pillow saves per tile** (`tiling.py` lines 172–174):
+```python
+img.crop(box).save(pdir / t["image"])
+lc.crop(box).save(pdir / t["land_cover"])
+topo.crop(box).save(pdir / t["topography"])
+```
+New pattern (must buffer then write_bytes, NOT pass `_GCSWriter` directly to PIL.save for the batch path):
+```python
+buf = io.BytesIO()
+img.crop(box).save(buf, format="PNG")
+(pdir / t["image"]).write_bytes(buf.getvalue())
+```
+Repeat for `land_cover` and `topography`. Alternatively use `_GCSWriter.open("wb")` as the save target — confirmed working because `GCSFile` implements the full seekable/writable buffer protocol.
+
+**Touch point 5 — pyramid.json write_text** (`tiling.py` line 185):
+```python
+(pdir / "pyramid.json").write_text(json.dumps(manifest, indent=2))
+```
+`_GCSWriter.write_text(text)` delegates to `self._fs.pipe_file(self._prefix, text.encode())`. Call site unchanged syntactically.
+
+**Touch point 6 — sample_weights.json shutil.copyfile** (`tiling.py` lines 189–195):
+```python
+shutil.copyfile(map_dir / _WEIGHTS_FILE, pdir / _WEIGHTS_FILE)
+if (pdir / _WEIGHTS_FILE).read_bytes() != weights_blob:
+    raise RuntimeError(...)
+```
+New pattern: `(pdir / _WEIGHTS_FILE).write_bytes(weights_blob)`. The integrity check `read_bytes()` comparison cannot be done against a GCS path without a round-trip read. Replace with an in-process check: `weights_blob` is already loaded at line 160 via `(map_dir / _WEIGHTS_FILE).read_bytes()` — the data written is exactly `weights_blob`, so the check becomes a no-op for the GCS path (the write is atomic via `pipe_file`; there is no partial-write risk). Keep the check only when `pdir` is a local `Path`.
+
+**Concurrency addition** (new code in `tiling.py`):
+The research mandates `ThreadPoolExecutor(max_workers=32)` wrapping the per-pyramid tile-write loop (touch points 4, 5, 6). The existing sequential loop at `tiling.py` lines 163–197 is the exact scope to parallelize. The `gcsfs.GCSFileSystem` instance is thread-safe for concurrent `pipe_file()` / `open()` calls.
 
 ---
 
-### `scripts/historical/iiif.py` (NEW — service, fetcher)
+### `scripts/build_dataset.py` (MODIFY — service/orchestrator, CRUD + file-I/O)
 
-**Analog:** `historical/worldcover.py` for the rasterio/HTTP boundary; `rumsey._get_json` for retry.
+**Analog:** `scripts/build_dataset.py` (self-modification) + `scripts/seg/gcs_checkpoint.py`
 
-**Imports + module constants pattern** — copy `worldcover.py:27–39` shape (stdlib, then numpy/rasterio, then module constants and base URLs):
+**Preserve unchanged:**
+- `_sanitize_stem`, `template_key`, `stratified_split` (lines 80–128) — logic unchanged
+- Collision guard (lines 238–247) — HARD FAIL before any split/build
+- `build_one_source` core render/label logic (lines 168–211)
+
+**`load_or_create_split` — current local pattern** (`build_dataset.py` lines 131–165):
 ```python
-import io, time
-from pathlib import Path
-import requests
-_IIIF_HEADERS = {"User-Agent": "mapclass-dataset-builder/0.1"}   # match rumsey._LUNA_HEADERS
-_MAX_RETRIES = 4
-_BACKOFF_BASE = 2.0
+split_path = Path(out_dir) / _SPLIT_FILENAME
+if split_path.exists():
+    data = json.loads(split_path.read_text())
+    return set(data["test"])
+# ... compute ...
+split_path.write_text(json.dumps({...}))
+```
+New GCS pattern (copy from `gcs_checkpoint.py` `fs.exists` / `fs.cat` / `fs.pipe_file` idiom):
+```python
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+split_gcs = f"{DATA_PREFIX}/synthetic/split.json"
+if fs.exists(split_gcs):
+    data = json.loads(fs.cat(split_gcs).decode())
+    return set(data["test"])
+# ... compute ...
+fs.pipe_file(split_gcs, json.dumps({...}).encode())
 ```
 
-**Retry pattern** — copy `rumsey._get_json` (173–197) structure but for a binary image body (`resp.content` / `resp.iter_content`) instead of `.json()`. Reuse `_download_wms_geotiff`'s streaming-write idiom (`rumsey.py:321–325`, the only part of the WMS code worth salvaging before deletion):
+**`build` function — raw dir listing, current pattern** (`build_dataset.py` line 219):
 ```python
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=65536):
-                f.write(chunk)
+geojsons = sorted(raw_dir.glob("*.geojson"))
+```
+New GCS pattern (from `gcs_checkpoint.py` `fs.ls` bare-prefix idiom, line 177):
+```python
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+raw_gcs = f"{DATA_PREFIX}/synthetic/raw"
+all_objects = fs.ls(raw_gcs)
+gcs_filenames = [o.rsplit("/", 1)[-1] for o in all_objects if o.endswith(".geojson")]
 ```
 
-**Core pattern** — RESEARCH Pattern 3 (`build_iiif_url` / `scale_gcps`, lines 354–369). The function must return the *actual* fetched (w, h) so the caller computes `scale = fetched_max_edge / orig_max_edge` (Pitfall 2 — `!w,h` is best-fit not exact). On-disk JPEG caching is Claude's discretion (CONTEXT) — mirror the `worldcover.py` URL-open simplicity unless caching is wanted.
+**New validation insertion point** — mandatory ordering (`build_dataset.py` lines 238–250):
+Insert `validate_manifest(gcs_filenames, manifest)` call AFTER the collision guard but BEFORE `load_or_create_split`. The collision guard is at lines 238–247; `load_or_create_split` is at line 250. The manifest hard-fail must occupy the slot between them.
+
+**`tiling.tile()` call site** (`build_dataset.py` line 207):
+```python
+tiling.tile(out)
+```
+New pattern — pass a `_GCSWriter` as `out_root`:
+```python
+from gcs_io import _GCSWriter
+gcs_map_prefix = f"{DATA_PREFIX}/synthetic/{split_name}/{src_id}__{style}"
+tiling.tile(out, out_root=_GCSWriter(fs, gcs_map_prefix + "/pyramids"))
+```
+`out` (local Path) stays as `map_dir` for the read-side; only `out_root` changes.
+
+**CLI arg defaults — Pitfall R-1 guard** (`build_dataset.py` lines 277–285):
+Change `--raw-dir` default from `Path("data/synthetic/raw")` to `"gs://mapclass-training-northeast1/data/synthetic/raw"`. Change `--out-dir` default to `"gs://mapclass-training-northeast1/data/synthetic"`. Add a startup assertion: if `out_dir` does not start with `gs://`, require `--local-ok` flag.
 
 ---
 
-### `scripts/historical/georef.py` (NEW — utility, transform)
+### `scripts/build_historical_dataset.py` (MODIFY — service/orchestrator, CRUD + file-I/O)
 
-**Analog:** `historical/dem.py` — the in-repo authority on rasterio CRS/transform/reproject mechanics.
+**Analog:** `scripts/build_dataset.py` (role-match — identical tiling + write patterns)
 
-**Imports pattern** — copy `dem.py:23–33`:
+**`tiling.tile()` call site** (`build_historical_dataset.py` line 110):
 ```python
-import numpy as np
-import rasterio
-from rasterio.crs import CRS
+tiling.tile(sample_dir)
 ```
-plus `from rasterio.control import GroundControlPoint` and `from rasterio.transform import from_gcps` (new, per RESEARCH Pattern 4).
+New pattern — same as `build_dataset.py`:
+```python
+tiling.tile(sample_dir, out_root=_GCSWriter(fs, gcs_out_prefix + "/pyramids"))
+```
+`sample_dir` stays as a local Path (scratch) for reads.
 
-**Core pattern** — RESEARCH Pattern 4 (`gcps_to_affine` / `write_georeferenced_geotiff`, lines 388–409). The `GroundControlPoint(row=py, col=px, x=lng, y=lat)` keyword convention is Pitfall 1 — wrap GCP construction in one helper with named kwargs (RESEARCH says so explicitly).
+**`manifest_path` write** (`build_historical_dataset.py` line 76):
+```python
+rumsey.emit_manifest(unregistered, manifest_path)
+```
+`rumsey.emit_manifest` currently writes to a local `Path`. RW-04 requires writing to `gs://…/data/historical/raw/unregistered_manifest.json`. Two options: (a) update `rumsey.emit_manifest` to accept a gcsfs `fs` + GCS path, or (b) write locally then `fs.pipe_file` the result. Option (b) follows the existing `gcs_checkpoint.py` write-to-BytesIO-then-pipe pattern and avoids modifying `rumsey.py`.
 
-**GeoTIFF write idiom** — model the `rasterio.open(out_path, "w", driver="GTiff", ...)` context-manager on the existing read-side context managers in `label.py:110` and `worldcover.py:119`. Write `crs=CRS.from_epsg(4326)`, `transform=affine` so `label.make_labels` consumes `ds.crs`/`ds.transform` unchanged (D-03).
+**`out_dir.mkdir` pattern** (`build_historical_dataset.py` line 127):
+```python
+out_dir.mkdir(parents=True, exist_ok=True)
+```
+When `out_dir` is a GCS prefix string, replace with `_GCSWriter(fs, gcs_out_prefix).mkdir()` (no-op for GCS; kept for local scratch compatibility).
+
+**CLI arg defaults** (`build_historical_dataset.py` lines 169, 179):
+Change `--raw-dir` default to a GCS path for build subcommand outputs. Note: raw GeoTIFF downloads from Rumsey remain local scratch (ephemeral-safe per RW-04 research finding). Change `--out-dir` default to `"gs://mapclass-training-northeast1/data/historical/dataset"`.
+
+**ThreadPoolExecutor already present** (`build_historical_dataset.py` lines 138–144):
+```python
+with ThreadPoolExecutor(max_workers=workers) as pool:
+    futures = {pool.submit(_process_one, tif, out_dir): tif for tif in tifs}
+    for fut in as_completed(futures):
+        tif, exc = fut.result()
+```
+This is the correct concurrency pattern. The `_process_one` function will need the `fs` + GCS prefix passed through; thread safety relies on the same `gcsfs.GCSFileSystem` instance being passed (thread-safe, as confirmed for `build_dataset.py`).
 
 ---
 
-### `scripts/build_historical_dataset.py` (orchestrator — re-wire `cmd_search`, D-04/D-05)
+### `scripts/build_satellite_dataset.py` (MODIFY — service/orchestrator, CRUD + file-I/O)
 
-**Analog:** itself. The threadpool `cmd_build` (82–117) is the reusable template for both other build scripts — DO NOT change it.
+**Analog:** `scripts/build_historical_dataset.py` (role-match — structurally identical)
 
-**KEEP — threadpool worker pattern** (`_process_one` 73–79, `cmd_build` 82–117):
+**`tiling.tile()` call site** (`build_satellite_dataset.py` line 219):
 ```python
-def _process_one(tif, out_dir):
-    try:
-        hist_label.make_labels(tif, sample_dir)
-        return tif, None
-    except Exception as exc:
-        return tif, exc
+tiling.tile(sample_dir)
+```
+New pattern — identical to historical:
+```python
+tiling.tile(sample_dir, out_root=_GCSWriter(fs, gcs_out_prefix + "/pyramids"))
+```
+
+**`manifest_path.write_text` call site** (`build_satellite_dataset.py` line 154):
+```python
+manifest_path.write_text(json.dumps({"scenes": resolved}, indent=2))
+```
+New GCS pattern:
+```python
+fs.pipe_file(gcs_manifest_path, json.dumps({"scenes": resolved}, indent=2).encode())
+```
+Follows `gcs_checkpoint.py` `pipe_file` pattern (lines 128–133 by analogy).
+
+**Coverage summary write** (`build_satellite_dataset.py` `cmd_coverage_scan` — currently delegates to `coverage.build_summary(summary_path)`): The `--summary` default `_DEFAULT_SUMMARY = Path("data/satellite/coverage_summary.json")` must change to the GCS path. The write inside `coverage.build_summary` currently uses `Path.write_text`; add a GCS write-out step after it returns.
+
+**CLI arg defaults** (`build_satellite_dataset.py` lines 57–59):
+```python
+_DEFAULT_SUMMARY = Path("data/satellite/coverage_summary.json")
+_DEFAULT_MANIFEST = Path("data/satellite/resolved_scenes.json")
+_DEFAULT_OUT = Path("data/satellite/dataset")
+```
+Change all three to `gs://mapclass-training-northeast1/data/satellite/...` strings.
+
+**ThreadPoolExecutor already present** (`build_satellite_dataset.py` lines 248–255):
+```python
+with ThreadPoolExecutor(max_workers=workers) as pool:
+    futures = {pool.submit(_process_one, scene, out_dir): scene for scene in scenes}
+    for fut in as_completed(futures):
+        _, status = fut.result()
+```
+Same pattern as historical; same thread-safety approach applies.
+
+---
+
+### `scripts/finetune_seg.py` (MODIFY — service/training loop, request-response + file-I/O)
+
+**Analog:** `scripts/finetune_seg.py` (self) + `scripts/seg/gcs_checkpoint.py`
+
+**Existing GCS resume sequence** (`finetune_seg.py` lines 220–231):
+```python
+cfg = config_prefix(args.backbone, args.variant)
+try:
+    resume_step, resume_state = gcs_latest_checkpoint(cfg)
+except ImportError:
+    resume_step, resume_state = 0, None
+```
+The new pull-once step inserts BEFORE this block (RW-03 research, step 1 of job-start sequence). The `gcs_latest_checkpoint` call at line 222 is step 3 in the new sequence — its position unchanged.
+
+**New job-start sequence** — insert before `carve_train_val` at line 206:
+```python
+# Step 1: pull-once (RW-03)
+from gcs_io import pull_dataset_from_gcs, verify_pull
+local_root = pull_dataset_from_gcs("train", args.scratch_dir)
+
+# Step 2: read split.json from GCS + verify pull
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+split_json = json.loads(fs.cat(f"{DATA_PREFIX}/synthetic/split.json").decode())
+verify_pull(local_root, split_json, "train")
+
+# Step 3: existing GCS checkpoint resume (unchanged)
+cfg = config_prefix(args.backbone, args.variant)
 ...
-    if workers == 1:
-        for tif in tifs: ...
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_process_one, tif, out_dir): tif for tif in tifs}
-            for fut in as_completed(futures): ...
+
+# Step 4: existing carve_train_val — point at local scratch root
+train_ds, val_ds = carve_train_val(local_root, val_frac=0.2, seed=42)
 ```
-`build_satellite_dataset.py` and the synthetic build copy this verbatim.
 
-**KEEP — argparse sub-command scaffold** (`main` 124–164): `sub = parser.add_subparsers(dest="command", required=True)` + the `add_common(p)` shared-args helper. This is the template for `build_satellite_dataset.py` (`coverage-scan`/`search`/`build`) and the synthetic split sub-command.
-
-**REWRITE — `cmd_search`** (45–66): remove the `rumsey._wms_url(item)` call (line 59 — dead after D-01). Replace the `downloaded` / `unregistered` two-bucket counting with the D-05 per-reason drop counter:
+**`--scratch-dir` arg addition** — follow the existing `--train-root` arg pattern (wherever it is defined in the argparse block):
 ```python
-drops = {"out_of_scale": 0, "not_in_allmaps": 0,
-         "gcps_insufficient": 0, "download_failed": 0}
-# ... increment per rumsey.download_georeferenced return status ...
-print("\nSearch summary:")
-for reason, n in drops.items():
-    print(f"  {reason}: {n}")
+parser.add_argument("--scratch-dir", type=Path, default=Path("/tmp/mapclass_data"),
+                    help="Local scratch dir for pull-once dataset cache (RW-03)")
 ```
-The existing final-summary print block (63–66) is the formatting style to extend. RESEARCH "Dropped maps must be loud" — surface `out_of_scale` rate as a Phase-2-not-done signal.
+
+**`ImportError` guard pattern** (already present at lines 221–225) — apply to `pull_dataset_from_gcs` and `verify_pull` the same way: wrap in `try/except ImportError` so offline CI (no gcsfs) falls back to `args.train_root` as before.
 
 ---
 
-### `scripts/satellite/stac.py` (NEW — service, search)
+### `scripts/evaluate_seg.py` (MODIFY — service/eval harness, request-response + file-I/O)
 
-**Analog:** `historical/allmaps.py` (lookup + retry + typed error).
+**Analog:** `scripts/evaluate_seg.py` (self) + `scripts/seg/gcs_checkpoint.py`
 
-**Module structure** — copy `allmaps.py:35–42`: endpoint constant, headers, `_MAX_RETRIES`, `_BACKOFF_BASE`, a `class StacLookupError(RuntimeError)`.
+**Existing `load_test_pyramid_dirs` call** (`evaluate_seg.py` lines 103–138 — reads local `split_json: Path` and `data_root: Path`):
+```python
+split = json.loads(split_json.read_text())
+test_ids: List[str] = split["test"]
+candidate = (data_root / "test" / map_id).resolve()
+```
+These local-Path reads continue to work post-RW-03 because the pull-once step downloads the test subset to local scratch before `load_test_pyramid_dirs` is called. The function itself is unchanged.
 
-**Anonymous-S3 env pattern** — copy `worldcover.py:36` exactly: `os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")` at module top. Same pattern works for `sentinel-cogs` (RESEARCH "Don't Hand-Roll").
+**New job-start sequence** — insert before `load_test_pyramid_dirs`:
+```python
+# Step 1: pull-once (RW-03)
+from gcs_io import pull_dataset_from_gcs, verify_pull
+local_root = pull_dataset_from_gcs("test", args.scratch_dir)
 
-**Core pattern** — RESEARCH Pattern 2 (`find_lowest_cloud_scene`, lines 318–329): `pystac_client.Client.open(ENDPOINT).search(collections=["sentinel-2-l2a"], bbox=..., datetime=..., query={"eo:cloud_cover": {"lt": max_cloud}})`, then `min(items, key=lambda it: it.properties.get("eo:cloud_cover", 100))`. `None` on no qualifying scene → drop-counted by caller (D-13, same as Allmaps 404).
+# Step 2: read split.json from GCS + verify pull
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+split_json_dict = json.loads(fs.cat(f"{DATA_PREFIX}/synthetic/split.json").decode())
+verify_pull(local_root, split_json_dict, "test")
 
-**New dep:** add `pystac-client>=0.9` to `requirements.txt` (RESEARCH Standard Stack; `pystac` arrives transitively).
+# Write split.json locally so load_test_pyramid_dirs can read it as a Path
+local_split = args.scratch_dir / "split.json"
+local_split.write_text(json.dumps(split_json_dict))
 
----
+# Step 3: existing load_test_pyramid_dirs — unchanged
+pdirs = load_test_pyramid_dirs(local_split, local_root)
+```
 
-### `scripts/satellite/fetch.py` (NEW — service, COG byte-range fetcher)
+**`--scratch-dir` arg addition** — same argparse pattern as `finetune_seg.py`.
 
-**Analog:** `historical/worldcover.py` — exact match for the `rasterio.open(url)` + windowed read + write-to-target-grid pattern.
-
-**Core pattern** — RESEARCH Pattern 2 (`fetch_visual_window`, lines 331–341): read the `visual` (TCI) asset with `rasterio.windows.Window`, never download the full scene (anti-pattern in RESEARCH). Mirror `worldcover.py:118–130`'s `with rasterio.open(url) as tile_ds:` + `try/except → print Warning` resilience idiom. Write the 4096-px RGB to a GeoTIFF via the **same `georef.write_georeferenced_geotiff` helper** built above (uses `win_transform` + `ds.crs` from the STAC item instead of GCP-derived affine).
-
-**Then reuse verbatim:** the resulting GeoTIFF goes straight into `historical.label.make_labels` — zero new label code (RESEARCH key insight; CONTEXT code_context). Satellite needs its own `*_LC_WEIGHTS` dict (deferred — planner proposes values, see "Shared Patterns").
-
----
-
-### `scripts/build_satellite_dataset.py` (NEW — orchestrator)
-
-**Analog:** `scripts/build_historical_dataset.py` — parallel structure, sub-commands `coverage-scan` / `search` / `build`.
-
-Copy the entire CLI scaffold (`main` 124–164, `add_common` 133–135), the `_process_one`/threadpool worker loop (73–117), and the per-reason drop-counter from the re-wired `cmd_search` (D-13 mandates the same transparency as D-05). `build` sub-command's worker calls `satellite.fetch.fetch_visual_window` → `georef` write → `historical.label.make_labels`.
-
----
-
-### `scripts/satellite/coverage.py` (NEW — service, class-diversity region picker)
-
-**Analog:** `historical/worldcover.py` — tile-origin enumeration + WC class remap.
-
-**Reuse** — `worldcover._tile_origins` (67–81) and `WC_REMAP` (42–54) for the coarse global summary. RESEARCH Pattern 5: build a one-shot ~1 km / 1°-cell class-count summary (cached sidecar), rank cells by class-diversity (Shannon entropy up-weighting cropland/built_up/flooded_wetland per D-14), emit picked cells + per-cell season. Drop-reason logging (`no_qualifying_scene`, `stac_search_failed`, `fetch_failed`) follows the D-05 counter shape.
-
----
-
-### `scripts/tiling.py` (NEW — utility, nested-pyramid decomposer; SHARED by all 3 families)
-
-**Analog:** `scripts/label.py` (synthetic) for the Pillow `Image` open/crop/save + per-map-directory I/O idiom. The 1+4+16 strict-2×2-nested geometry is novel — no library or in-repo analog (RESEARCH: "custom but small").
-
-**I/O idiom to copy** — `label.py:64–88` (open PNGs, derive width/height, iterate, `.save(output_dir / "...")`). Input is a completed per-map dir (`image.png`/`land_cover.png`/`topography.png`/`sample_weights.json`); output is the pyramid tree.
-
-**Geometry (locked, D-07/D-08/D-09):** per pyramid 1×896 + 4×448 + 16×224 in strict 2×2 nesting; pyramid stride 448 (50% top-scale overlap); drop pyramids whose 896 footprint is >50% off the source map. Storage layout is Claude's discretion (RESEARCH Open Q3 recommends per-pyramid subdir + `pyramid.json` listing 21 paths + parent→child indices).
-
-**Integration:** called by all three `build_*` scripts after their per-map dir completes. `sample_weights.json` propagates per-tile (per-source values locked; scoping is Claude's discretion per CONTEXT).
-
----
-
-### `scripts/build_dataset.py` (synthetic orchestrator — add split, D-15..D-18)
-
-**Analog:** itself + `build_historical_dataset.py` sub-command scaffold.
-
-**KEEP** — the `render_map` → `make_labels` per-geojson loop (36–42).
-
-**CHANGE per Pitfall 6** — currently writes `flat.png`/`illustrated.png`/`satellite.png` (3 styles, no `image.png`). RESEARCH recommends option (a): treat each `(azgaar_id, style)` as its own map dir `<azgaar_id>__<style>/` with its own `image.png`, sharing `land_cover.png`/`topography.png`. Surface for user approval (A4). The synthetic `label.make_labels` (`scripts/label.py`) writes only `land_cover.png`/`topography.png` — no `sample_weights.json` yet; add a synthetic weights dict (see Shared Patterns).
-
-**ADD per D-15..D-18** — a seeded stratified-by-Azgaar-template splitter writing `data/synthetic/split.json` on first run (frozen thereafter); route IDs into sibling `data/synthetic/train/` vs `test/` dirs (filesystem-level separation — train DataLoader literally cannot see `test/`). Template-name extraction is MEDIUM-confidence (RESEARCH: needs Azgaar GeoJSON field inspection). Upgrade the CLI to the `build_historical_dataset.py` argparse sub-command scaffold; optional rename to `build_synthetic_dataset.py` for symmetry (safe — only README prose consumes the name).
+**`--split-json` and `--data-root` arg defaults** (currently `data/synthetic/split.json` and `data/synthetic/` in the CLI):
+Change defaults to the GCS paths; or alternatively, document that when `--scratch-dir` is set, both are derived from scratch. The planner should resolve this in plan 02-05.
 
 ---
 
 ## Shared Patterns
 
-### Exponential Backoff HTTP Retry
-**Source:** `scripts/historical/rumsey.py:173–197` (`_get_json`) and `scripts/historical/allmaps.py:67–103` (`lookup`)
-**Apply to:** `historical/iiif.py`, `satellite/stac.py`
+### GCS Auth / fs Instantiation
+**Source:** `scripts/seg/gcs_checkpoint.py` lines 36–39, 45, 131, 171
+**Apply to:** `scripts/gcs_io.py`, all three build scripts, `scripts/finetune_seg.py`, `scripts/evaluate_seg.py`
 ```python
-for attempt in range(_MAX_RETRIES):
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
-        if resp.status_code in (429, 503):
-            time.sleep(_BACKOFF_BASE ** attempt); continue
-        resp.raise_for_status()
-        ...
-    except requests.RequestException as exc:
-        if attempt == _MAX_RETRIES - 1: raise
-        time.sleep(_BACKOFF_BASE ** attempt)
-```
-Constants `_MAX_RETRIES` / `_BACKOFF_BASE = 2.0` and `_HEADERS = {"User-Agent": "mapclass-dataset-builder/0.1"}` are the established values — reuse them.
+try:
+    import gcsfs  # type: ignore[import]
+except ModuleNotFoundError:
+    gcsfs = None  # type: ignore[assignment]
 
-### Anonymous Public-S3 Access
-**Source:** `scripts/historical/worldcover.py:36` (also `dem.py:33`)
-**Apply to:** `satellite/stac.py`, `satellite/fetch.py`, `satellite/coverage.py`
+GCS_PROJECT = "narrative-campaign"
+
+# Instantiate once per script entrypoint; pass instance to _GCSWriter
+fs = gcsfs.GCSFileSystem(project=GCS_PROJECT)
+```
+Never re-instantiate `GCSFileSystem` per tile or per file. Never inline auth credentials — ADC only.
+
+### fs.ls Bare-Prefix Idiom
+**Source:** `scripts/seg/gcs_checkpoint.py` lines 174–179
+**Apply to:** `scripts/gcs_io.py` (`pull_dataset_from_gcs`, `verify_pull`), `scripts/build_dataset.py` raw-dir listing
 ```python
-os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
+bare_prefix = "mapclass-training-northeast1/data/synthetic/raw/"
+try:
+    files = fs.ls(bare_prefix)
+except FileNotFoundError:
+    return 0, None  # or handle appropriately
 ```
-Module-top, before any `rasterio.open(url)`. No boto3. Works identically for `esa-worldcover`, `copernicus-dem-30m`, `sentinel-cogs`.
+`fs.ls()` returns bare paths (no `gs://` prefix). Strip `gs://` when constructing bare_prefix.
 
-### Typed Lookup Error
-**Source:** `scripts/historical/allmaps.py:41–42`
-**Apply to:** `satellite/stac.py`
+### Atomic GCS Write (pipe_file for pre-buffered data)
+**Source:** `scripts/seg/gcs_checkpoint.py` lines 127–133 (BytesIO variant)
+**Apply to:** `scripts/gcs_io.py` `_GCSWriter.write_bytes`, `scripts/build_dataset.py` split.json write, all manifest writes
 ```python
-class AllmapsLookupError(RuntimeError):
-    """Raised for unexpected (non-404/500) failures during Allmaps lookup."""
+# For pre-buffered bytes (JSON manifests, weights blobs):
+fs.pipe_file(bare_gcs_path, data_bytes)
+
+# For streaming data (Pillow PNG, torch checkpoint):
+with fs.open(gs_path_or_bare_path, "wb") as fh:
+    fh.write(data)
 ```
-404/missing → return `None` (caller drop-counts); unexpected → raise typed error.
 
-### Per-Reason Drop Counter (D-05 / D-13)
-**Source:** new in re-wired `build_historical_dataset.py:cmd_search`; pattern extends the existing summary-print block at `build_historical_dataset.py:63–66`
-**Apply to:** `build_historical_dataset.py`, `build_satellite_dataset.py`, `satellite/coverage.py`
-A `dict[str, int]` of drop reasons, incremented in the worker loop, printed at end of the search/build command. "A clean pipeline that quietly throws away most of the data is not job done" (CONTEXT specifics).
-
-### Per-Map Output Schema (mandatory, all 3 families)
-**Source:** `scripts/historical/label.py:95–149` (canonical writer)
-**Apply to:** historical (have it), satellite (reuse `label.make_labels` verbatim), synthetic (`scripts/label.py` must add `image.png` + `sample_weights.json`)
-Every per-map dir: `image.png` + `land_cover.png` + `topography.png` + `sample_weights.json`. The `sample_weights.json` dict shape is locked:
+### Hard-Fail Pattern (sys.exit(1), not raise)
+**Source:** `scripts/build_dataset.py` lines 243–247 (collision guard):
 ```python
-{"land_cover_weights": {<class>: float, ...},
- "topography_weight": float,
- "source": "<historical|synthetic|satellite>",
- "map_file": "<name>"}
+if dupes:
+    print("FATAL: source stems collide after sanitization — ...")
+    for sid in sorted(dupes):
+        print(f"  {sid!r} <- {sorted(dupes[sid])}")
+    sys.exit(1)
 ```
-`HISTORICAL_LC_WEIGHTS` (`label.py:40–51`) is **frozen — do not modify**. Synthetic + satellite need their own dicts of identical shape (deferred; planner proposes values for user approval — synthetic likely uniform-1.0, satellite down-weight forest/water, up-weight cropland/built_up/flooded_wetland per PROJECT.md).
+**Apply to:** `validate_manifest` in `scripts/gcs_io.py` or `scripts/build_dataset.py`. Use `sys.exit(1)` (not `raise ValueError`, not `print("WARNING")`). Identical loudness to the collision guard.
 
-### Threadpool Worker Loop
-**Source:** `scripts/build_historical_dataset.py:73–117`
-**Apply to:** `build_satellite_dataset.py`, synthetic build
-`_process_one(item) → (item, exc|None)` returning exceptions instead of raising, dispatched via `ThreadPoolExecutor` + `as_completed`, with a `workers == 1` synchronous fast path.
+### ThreadPoolExecutor + as_completed Error Re-raise
+**Source:** `scripts/build_historical_dataset.py` lines 138–144
+**Apply to:** `scripts/tiling.py` tile-write loop (new addition), all three build scripts (already present in historical + satellite)
+```python
+with ThreadPoolExecutor(max_workers=workers) as pool:
+    futures = {pool.submit(fn, *args): args for args in tasks}
+    for fut in as_completed(futures):
+        result = fut.result()  # re-raises any exception from the worker
+```
+For `tiling.py` tile writes: `max_workers=32` (research-verified safe against 1000 req/s quota). Each `_GCSWriter` instance passed to the pool must be a per-pyramid instance (not shared across threads — `_GCSWriter` is not thread-safe; the underlying `gcsfs.GCSFileSystem` is).
 
-### argparse Sub-Command Scaffold
-**Source:** `scripts/build_historical_dataset.py:124–164`
-**Apply to:** `build_satellite_dataset.py` (`coverage-scan`/`search`/`build`), synthetic build (add split sub-command)
-`add_subparsers(dest="command", required=True)` + a local `add_common(p)` for shared `--raw-dir`/`--out-dir` args; module docstring doubles as `epilog` via `RawDescriptionHelpFormatter`.
+### Missing-file SKIP + Log Guard
+**Source:** `scripts/build_dataset.py` lines 201–208, `scripts/build_historical_dataset.py` lines 102–110
+**Apply to:** All three build scripts' tiling call sites (unchanged logic, only `tiling.tile` call changes)
+```python
+missing = [f for f in _REQUIRED_MAP_FILES if not (out / f).exists()]
+if missing:
+    print(f"  SKIP tiling {out.name}: missing {', '.join(missing)}")
+else:
+    tiling.tile(out, out_root=_GCSWriter(fs, gcs_prefix))
+```
+
+### Test Mock for gcsfs
+**Source:** `tests/test_seg_gcs.py` lines 52–120
+**Apply to:** `tests/test_gcs_io.py` (new), any test touching GCS in build scripts
+```python
+class _MockGCSFileSystem:
+    _store: dict[str, bytes] = {}
+
+    def open(self, path, mode="rb"): ...   # BytesIO-backed context manager
+    def ls(self, prefix): ...              # filter _store keys by prefix
+    # Add for gcs_io.py tests:
+    def pipe_file(self, path, data): self._store[path.lstrip("gs://")] = data
+    def cat(self, path): return self._store[path.lstrip("gs://")]
+    def exists(self, path): return path.lstrip("gs://") in self._store
+    def get(self, remote, local, recursive=False): ...  # write files to local dir
+    def mkdirs(self, path, exist_ok=True): pass
+
+mock.patch("gcs_io.gcsfs", _MockGCSModule)
+```
+
+---
 
 ## No Analog Found
 
-None. Every new file maps to an in-repo analog. The only genuinely novel logic is the **nested-pyramid tile geometry** inside `scripts/tiling.py` (1+4+16 strict-2×2 nesting, stride 448, >50%-off-edge drop) — the file *I/O scaffolding* copies `scripts/label.py`, but the geometry has no analog and the planner should treat D-07/D-08/D-09 + RESEARCH Open-Q3 as the spec. Confidence on tile storage layout is LOW (Claude's discretion); confidence on Azgaar template-name extraction for the synthetic split is MEDIUM (needs GeoJSON field inspection during planning).
+No files in this phase lack a close analog. All 7 files have strong analogs as documented above.
+
+---
 
 ## Metadata
 
-**Analog search scope:** `scripts/`, `scripts/historical/` (full read of all 13 Python modules, 2321 LOC total)
-**Files scanned:** 13 source files + `requirements.txt` + CONTEXT.md + RESEARCH.md (668 lines, read in 2 non-overlapping passes)
-**Tests:** none exist in repo — EVAL-01's `test_no_train_test_intersection` / `test_split_manifest_frozen` (RESEARCH Validation Architecture) will be the first tests; no test analog to copy, follow RESEARCH's described structure.
-**Pattern extraction date:** 2026-05-15
-</content>
+**Analog search scope:** `scripts/`, `scripts/seg/`, `tests/`
+**Files scanned:** 9 (gcs_checkpoint.py, tiling.py, build_dataset.py, build_historical_dataset.py, build_satellite_dataset.py, finetune_seg.py, evaluate_seg.py, test_seg_gcs.py, conftest.py)
+**Pattern extraction date:** 2026-05-16
+
+**Key constraint:** `gcs_checkpoint.py` is the single canonical GCS I/O template for this project. Every new GCS operation in Phase 2 must mirror its lazy-import, ADC-only-auth, bare-prefix `fs.ls`, and `pipe_file`/`fs.open` write idioms. No deviations.

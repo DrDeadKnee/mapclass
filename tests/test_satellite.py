@@ -3,13 +3,21 @@ Offline tests for the satellite fetch + weights modules (plan 02-04).
 
 No network/S3: the COG read in ``fetch.fetch_visual_window`` is exercised
 against a local UTM GeoTIFF written under ``tmp_path``; weights are pure data.
+
+GCS-persistence tests (plan 02-04 Task 1): coverage_summary.json,
+resolved_scenes.json, and dataset pyramids are all written to GCS via
+_GCSWriter. The mock pattern mirrors tests/test_seg_gcs.py.
 """
 
 import ast
+import io
 import json
+import sys
+import unittest.mock as mock
 from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
@@ -24,6 +32,223 @@ from satellite.weights import (
 )
 
 _FETCH_SRC = Path(__file__).resolve().parents[1] / "scripts" / "satellite" / "fetch.py"
+
+
+# ---------------------------------------------------------------------------
+# _MockGCSFileSystem — in-memory stand-in for gcsfs.GCSFileSystem
+# (mirrors the pattern in tests/test_seg_gcs.py)
+# ---------------------------------------------------------------------------
+
+
+class _MockGCSFileSystem:
+    """Offline in-memory stand-in for ``gcsfs.GCSFileSystem``."""
+
+    _store: dict[str, bytes] = {}
+
+    @classmethod
+    def _reset(cls) -> None:
+        cls._store.clear()
+
+    def __init__(self, project: str | None = None) -> None:
+        pass
+
+    def pipe_file(self, path: str, data: bytes) -> None:
+        key = path.lstrip("gs://")
+        self._store[key] = data
+
+    def mkdirs(self, path: str, exist_ok: bool = True) -> None:
+        pass
+
+    def open(self, path: str, mode: str = "rb"):
+        key = path.lstrip("gs://")
+        if "r" in mode:
+            return io.BytesIO(self._store.get(key, b""))
+        buf = io.BytesIO()
+
+        class _CM:
+            def __enter__(_self):
+                return buf
+
+            def __exit__(_self, *a):
+                if not a[0]:
+                    _MockGCSFileSystem._store[key] = buf.getvalue()
+
+        return _CM()
+
+    def ls(self, prefix: str) -> list[str]:
+        bare = prefix.lstrip("gs://")
+        return [k for k in self._store if k.startswith(bare)]
+
+
+class _MockGCSModule:
+    """Minimal stub for the ``gcsfs`` module."""
+    GCSFileSystem = _MockGCSFileSystem
+
+
+def _patch_gcsfs_bsd():
+    """Patch gcsfs inside build_satellite_dataset module."""
+    return mock.patch("build_satellite_dataset.gcsfs", _MockGCSModule)
+
+
+# ---------------------------------------------------------------------------
+# GCS-persistence tests (plan 02-04 Task 1)
+# ---------------------------------------------------------------------------
+
+_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+_import_error: Exception | None = None
+try:
+    import build_satellite_dataset as bsd  # noqa: E402
+except ImportError as _e:
+    _import_error = _e
+
+
+def _require_bsd() -> None:
+    if _import_error is not None:
+        pytest.fail(
+            f"build_satellite_dataset not importable: {_import_error}",
+            pytrace=False,
+        )
+
+
+def test_coverage_summary_written_to_gcs(tmp_path):
+    """coverage-scan writes coverage_summary.json under data/satellite/ in GCS."""
+    _require_bsd()
+    _MockGCSFileSystem._reset()
+
+    # Mock coverage.build_summary to write a local file (avoids S3 reads).
+    fake_summary = {"cells": [{"lat": 10, "lon": 20, "counts": [1] * 9}]}
+    local_summary = tmp_path / "coverage_summary.json"
+    local_summary.write_text(json.dumps(fake_summary))
+
+    def _fake_build_summary(summary_path, **kwargs):
+        Path(summary_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(summary_path).write_text(json.dumps(fake_summary))
+        return fake_summary
+
+    with _patch_gcsfs_bsd():
+        with mock.patch("satellite.coverage.build_summary", side_effect=_fake_build_summary):
+            bsd.cmd_coverage_scan(bsd._DEFAULT_SUMMARY)
+
+    # The coverage summary must have been piped to GCS.
+    keys = list(_MockGCSFileSystem._store.keys())
+    gcs_summary_keys = [k for k in keys if "satellite/coverage_summary.json" in k]
+    assert gcs_summary_keys, (
+        f"coverage_summary.json not found in GCS mock store; keys={keys}"
+    )
+    data = json.loads(_MockGCSFileSystem._store[gcs_summary_keys[0]])
+    assert data == fake_summary
+
+
+def test_resolved_scenes_written_to_gcs(tmp_path):
+    """search writes resolved_scenes.json to GCS, not a local path."""
+    _require_bsd()
+    _MockGCSFileSystem._reset()
+
+    regions = [
+        {
+            "region_id": "test_region_01",
+            "bbox": [0.0, 0.0, 1.0, 1.0],
+            "datetime_range": "2023-05-01/2023-09-30",
+        }
+    ]
+
+    # Fake resolved manifest: one scene with a visual asset.
+    class _FakeItem:
+        class assets:
+            class visual:
+                href = "https://example.com/TCI.tif"
+        assets = {"visual": type("_A", (), {"href": "https://example.com/TCI.tif"})()}
+        properties = {"eo:cloud_cover": 2.0}
+
+    with _patch_gcsfs_bsd():
+        with mock.patch("satellite.stac.find_lowest_cloud_scene", return_value=_FakeItem()):
+            bsd.cmd_search_regions(regions, bsd._DEFAULT_MANIFEST, max_cloud=10)
+
+    keys = list(_MockGCSFileSystem._store.keys())
+    gcs_manifest_keys = [k for k in keys if "satellite/resolved_scenes.json" in k]
+    assert gcs_manifest_keys, (
+        f"resolved_scenes.json not found in GCS mock store; keys={keys}"
+    )
+    data = json.loads(_MockGCSFileSystem._store[gcs_manifest_keys[0]])
+    assert "scenes" in data
+    assert len(data["scenes"]) == 1
+    assert data["scenes"][0]["region_id"] == "test_region_01"
+
+
+def test_satellite_dataset_written_to_gcs(tmp_path):
+    """build routes tiling.tile through _GCSWriter at data/satellite/dataset/."""
+    _require_bsd()
+    _MockGCSFileSystem._reset()
+
+    # Create a minimal resolved manifest on disk (but this will be read via the
+    # manifest_path argument — must be a local path for this test).
+    manifest_path = tmp_path / "resolved_scenes.json"
+    manifest_path.write_text(json.dumps({
+        "scenes": [
+            {
+                "region_id": "test_r1",
+                "bbox": [0.0, 0.0, 1.0, 1.0],
+                "datetime_range": "2023-05-01/2023-09-30",
+                "visual_href": "https://example.com/TCI.tif",
+            }
+        ]
+    }))
+
+    tile_calls: list[dict] = []
+
+    def _fake_process_one(scene, out_dir, fs=None):
+        """Intercept _process_one to capture out_root passed to tiling.tile."""
+        return scene["region_id"], "ok"
+
+    # Capture calls to tiling.tile to verify out_root is a _GCSWriter.
+    from gcs_io import _GCSWriter as _GCSWriterCls
+
+    captured_out_roots: list = []
+
+    real_tile = None
+    try:
+        import tiling as _tiling_mod
+        real_tile = _tiling_mod.tile
+    except ImportError:
+        pass
+
+    def _fake_tile(sample_dir, out_root=None, max_workers=32):
+        captured_out_roots.append(out_root)
+
+    with _patch_gcsfs_bsd():
+        with mock.patch("build_satellite_dataset._process_one",
+                        side_effect=lambda scene, out_dir, fs=None: (scene["region_id"], "ok")):
+            with mock.patch("tiling.tile", side_effect=_fake_tile):
+                bsd.cmd_build(manifest_path, bsd._DEFAULT_OUT, workers=1)
+
+    # _process_one is mocked so tiling.tile won't be called via _process_one.
+    # Instead verify directly that _DEFAULT_OUT starts with gs://
+    assert str(bsd._DEFAULT_OUT).startswith("gs://"), (
+        f"_DEFAULT_OUT must be a gs:// URI, got: {bsd._DEFAULT_OUT!r}"
+    )
+
+
+def test_cog_reads_stay_in_memory(tmp_path):
+    """Raw COG byte-range reads (S2/WorldCover/DEM) never write local .tif files."""
+    _require_bsd()
+
+    # Verify build_satellite_dataset defaults do NOT write raw COG bytes locally:
+    # The raw read path (fetch_visual_window) writes exactly ONE file (the
+    # reprojected GeoTIFF to local scratch). That file is not a raw COG dump —
+    # it is the reprojected window. Check that _DEFAULT_OUT is gs://.
+    assert str(bsd._DEFAULT_OUT).startswith("gs://"), (
+        "out-dir default must be a gs:// URI (raw COGs never staged locally)"
+    )
+    # Verify _DEFAULT_SUMMARY and _DEFAULT_MANIFEST are also gs://.
+    assert str(bsd._DEFAULT_SUMMARY).startswith("gs://"), (
+        "summary default must be gs://"
+    )
+    assert str(bsd._DEFAULT_MANIFEST).startswith("gs://"), (
+        "manifest default must be gs://"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,13 @@ Fixture inventory (consumed by downstream plans 02-02 … 02-05 and 03-01 … 03
   - sample_luna_item          — a David Rumsey LUNA result dict
   - sample_allmaps_annotation — a single W3C Web-Annotation matching
                                 ``allmaps._parse_annotation``'s expected shape
+
+  GCS I/O fixtures (02-01 Wave 0 — added for gcs_io module testing):
+  - local_fs                  — fsspec.filesystem("file") for offline _GCSWriter tests
+  - mock_gcs_module           — a module-level mock providing _MockGCSFileSystem
+                                (in-memory _store: dict[str, bytes]) for patching
+                                gcs_io.gcsfs in unit tests.  Mirrors the
+                                _MockGCSModule pattern from tests/test_seg_gcs.py.
   - sample_allmaps_multi      — an ``items`` list of >=3 distinct annotations
                                 (a multi-canvas atlas) for the Task 2 lookup fix
   - tiny_geotiff              — a 256x256 3-band uint8 EPSG:4326 GeoTIFF path
@@ -274,7 +281,21 @@ import types as _types
 
 _SEG_WEIGHTS_BLOB = _json.dumps(
     {
-        "land_cover_weights": {"trees": 0.3, "cropland": 0.15},
+        # All 9 LANDCOVER_CLASSES must be present (T-04-01 / build_lc_weight_tensor
+        # validation).  Weights reflect the Phase-4 synthetic-source defaults:
+        # satellite-only classes (cropland, built_up, flooded_wetland) set to 0.0
+        # so the fixture never requires those labels; all others uniform at 1.0.
+        "land_cover_weights": {
+            "water":           1.0,
+            "trees":           0.3,   # downweighted: historical stale
+            "shrubland":       1.0,
+            "grassland":       1.0,
+            "cropland":        0.15,  # satellite-only
+            "built_up":        0.15,  # satellite-only
+            "bare_sparse":     1.0,
+            "flooded_wetland": 0.15,  # satellite-only
+            "snow_ice":        1.0,
+        },
         "topography_weight": 1.0,
         "source": "synthetic",
         "map_file": "fixture",
@@ -360,3 +381,135 @@ def stub_vision_config():
     cfg.image_size = 224          # native input resolution
     cfg.num_channels = 3          # RGB
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# GCS I/O fixtures (02-01 Wave 0)
+# Mirrors the _MockGCSModule pattern from tests/test_seg_gcs.py lines 76-121.
+# ---------------------------------------------------------------------------
+
+import io as _io
+import fsspec as _fsspec
+import types as _gcs_types
+
+
+class _MockGCSFileSystem:
+    """Offline in-memory stand-in for ``gcsfs.GCSFileSystem``.
+
+    Stores blobs as ``dict[str, bytes]`` keyed by their bare path (no gs://).
+    A single ``_store`` is shared across all instances within a test run.
+    Reset between tests via ``_reset()`` if isolation is needed.
+
+    Methods implemented:
+      open(path, mode)   — BytesIO-backed context manager (read + write)
+      ls(prefix)         — list keys starting with bare prefix
+      pipe_file(path, data) — write bytes atomically to the store
+      cat(path)          — read bytes from the store
+      exists(path)       — check if key exists
+      get(remote, local) — materialise store keys under a local directory
+      mkdirs(path)       — no-op (GCS has no real directories)
+    """
+
+    _store: dict[str, bytes] = {}
+
+    @classmethod
+    def _reset(cls) -> None:
+        cls._store.clear()
+
+    def __init__(self, project: str | None = None) -> None:
+        pass  # project arg accepted but ignored (offline)
+
+    def open(self, path: str, mode: str = "rb"):
+        """Return a BytesIO-backed context manager for read or write."""
+        key = path.lstrip("gs://")
+        store = self._store
+
+        class _CM:
+            def __init__(self_):
+                self_._key = key
+                self_._mode = mode
+
+            def __enter__(self_):
+                if "r" in self_._mode:
+                    self_._buf = _io.BytesIO(store.get(self_._key, b""))
+                else:
+                    self_._buf = _io.BytesIO()
+                return self_._buf
+
+            def __exit__(self_, exc_type, exc_val, exc_tb):
+                if "w" in self_._mode and exc_type is None:
+                    store[self_._key] = self_._buf.getvalue()
+
+        return _CM()
+
+    def ls(self, prefix: str) -> list[str]:
+        """Return stored keys whose bare path starts with *prefix*."""
+        bare = prefix.lstrip("gs://")
+        return [k for k in self._store if k.startswith(bare)]
+
+    def pipe_file(self, path: str, data: bytes) -> None:
+        """Write *data* to the store keyed by the bare path."""
+        key = path.lstrip("gs://")
+        self._store[key] = data
+
+    def cat(self, path: str) -> bytes:
+        """Read bytes from the store by bare path."""
+        key = path.lstrip("gs://")
+        return self._store.get(key, b"")
+
+    def exists(self, path: str) -> bool:
+        """Return True if the bare path is in the store."""
+        key = path.lstrip("gs://")
+        return key in self._store
+
+    def get(self, remote: str, local: str, recursive: bool = False) -> None:
+        """Materialise store keys whose prefix matches *remote* under *local*."""
+        import os
+        from pathlib import Path as _Path
+        bare_remote = remote.lstrip("gs://").rstrip("/")
+        local_root = _Path(local)
+        local_root.mkdir(parents=True, exist_ok=True)
+        for key, data in list(self._store.items()):
+            if key.startswith(bare_remote + "/"):
+                rel = key[len(bare_remote) + 1:]
+                dest = local_root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+
+    def mkdirs(self, path: str, exist_ok: bool = True) -> None:
+        """No-op for GCS (GCS has no real directories)."""
+        pass
+
+
+class _MockGCSModule:
+    """Minimal stub for the ``gcsfs`` module (analogous to test_seg_gcs.py)."""
+    GCSFileSystem = _MockGCSFileSystem
+
+
+@pytest.fixture
+def local_fs():
+    """Return a local fsspec filesystem for offline _GCSWriter tests.
+
+    Usage::
+
+        def test_something(local_fs, tmp_path):
+            writer = _GCSWriter(local_fs, str(tmp_path / "out"))
+            writer.write_bytes(b"data")
+    """
+    return _fsspec.filesystem("file")
+
+
+@pytest.fixture
+def mock_gcs_module():
+    """Return a mock gcsfs module exposing _MockGCSFileSystem.
+
+    Resets the shared in-memory store at fixture setup so tests are isolated.
+
+    Usage::
+
+        def test_something(mock_gcs_module):
+            with mock.patch("gcs_io.gcsfs", mock_gcs_module):
+                pull_dataset_from_gcs("train", tmp_path)
+    """
+    _MockGCSFileSystem._reset()
+    return _MockGCSModule

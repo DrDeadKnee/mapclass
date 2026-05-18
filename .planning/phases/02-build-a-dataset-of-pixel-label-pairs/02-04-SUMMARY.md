@@ -1,186 +1,111 @@
 ---
-phase: 02-build-a-dataset-of-pixel-label-pairs
-plan: 04
-subsystem: satellite-pipeline
-status: complete
-tags: [satellite, sentinel-2, stac, cog, coverage-scan, worldcover]
-requires:
-  - 02-01
-  - 02-02 (scripts/historical/georef.py::write_georeferenced_geotiff — reused verbatim)
-provides:
-  - scripts/satellite/ package (stac, fetch, coverage, weights)
-  - scripts/build_satellite_dataset.py (coverage-scan / search / build)
-affects:
-  - requirements.txt (pystac-client>=0.9 added)
-tech-stack:
-  added: [pystac-client>=0.9]
-  patterns:
-    - anonymous public-S3 via AWS_NO_SIGN_REQUEST + GDAL VSI-CURL (no boto3)
-    - COG byte-range windowed read (rasterio.windows.Window) — never full-scene
-    - typed lookup error + exponential backoff (StacLookupError, mirrors AllmapsLookupError)
-    - cached one-shot coarse-WorldCover summary (mandatory sidecar cache)
-    - per-reason drop counter (D-13, parallels D-05)
-key-files:
-  created:
-    - scripts/satellite/__init__.py
-    - scripts/satellite/weights.py
-    - scripts/satellite/stac.py
-    - scripts/satellite/fetch.py
-    - scripts/satellite/coverage.py
-    - scripts/build_satellite_dataset.py
-    - tests/test_coverage.py
-    - tests/integration/test_stac_online.py
-    - tests/integration/test_satellite_online.py
+phase: "02-build-a-dataset-of-pixel-label-pairs"
+plan: "04"
+subsystem: "satellite-pipeline"
+tags: ["gcs", "satellite", "dataset", "rw-04", "tdd"]
+dependency_graph:
+  requires: ["02-01", "02-02"]
+  provides: ["GCS-canonical satellite dataset (RW-04)", "build_satellite_dataset.py _GCSWriter integration"]
+  affects: ["scripts/build_satellite_dataset.py", "tests/test_satellite.py"]
+tech_stack:
+  added: []
+  patterns: ["lazy-gcsfs-import", "_GCSWriter per-pyramid", "fs.pipe_file atomic write", "shared-fs-through-ThreadPoolExecutor"]
+key_files:
+  created: []
   modified:
-    - requirements.txt
-    - tests/test_stac.py
-    - tests/test_satellite.py
+    - "scripts/build_satellite_dataset.py"
+    - "tests/test_satellite.py"
 decisions:
-  - "Satellite loss weights: balance-tilt (checkpoint:decision RESOLVED) — water/trees 0.6, cropland/built_up/flooded_wetland 1.3, others 1.0, SATELLITE_TOPO_WEIGHT 1.0"
-  - "Rule 1 fix: reproject the windowed UTM read to EPSG:4326 before the shared georef writer (which hard-codes EPSG:4326) so make_labels' WorldCover/DEM alignment stays geographically correct"
+  - "Coverage summary temp-file pattern: coverage.build_summary requires a local Path; write to tempfile then pipe to GCS (avoids modifying coverage.py)"
+  - "cmd_search_regions accepts optional fs parameter for testability (avoids creating fs if test already patched gcsfs)"
+  - "_process_one uses TemporaryDirectory for local scratch; local GeoTIFF (reprojected window) is ephemeral — only pyramid writes go to GCS"
+  - "--local-ok flag enforces Pitfall R-1 guard (T-02-30): non-gs:// out-dir hard-errors without flag"
 metrics:
-  duration: ~1 session
-  completed: 2026-05-15
+  duration: "4m"
+  completed_date: "2026-05-16T22:02:23Z"
+  tasks_completed: 1
+  files_changed: 2
 ---
 
-# Phase 02 Plan 04: Satellite Pipeline Summary
+# Phase 02 Plan 04: Satellite GCS-Canonical Pipeline Summary
 
-One-liner: Sentinel-2 L2A satellite source family — a cached class-diversity
-coarse-WorldCover region picker (D-14) feeds a cloud-filtered STAC search whose
-lowest-cloud scene is fetched as a 4096-px RGB COG byte-range window, then
-labelled with the reused historical pipeline and the approved balance-tilt
-satellite loss weights.
-
-## Execution Status
-
-All implementation tasks complete. The plan's first task (Task 0) was a
-BLOCKING `checkpoint:decision` for the per-source loss-weight values; it was
-presented to the user and **RESOLVED as `balance-tilt`**. This continuation
-agent resumed at Task 1 and executed Tasks 1-3 to completion.
-
-## Tasks Completed
-
-| Task | Name | Status | Commit |
-| ---- | ---- | ------ | ------ |
-| 0 | Checkpoint: approve per-source loss weights | RESOLVED — balance-tilt | (decision, pre-resume) |
-| 1 | satellite/ package — stac.py, fetch.py, weights.py | done | `8387e65` |
-| 2 | coverage.py — class-diversity region picker (D-14) | done | `e6ccaba` |
-| 3 | build_satellite_dataset.py — sub-commands (D-13) | done | `aa2b54f` |
-
-## Approved Checkpoint Decision
-
-**balance-tilt** (locked — hard-coded verbatim into `scripts/satellite/weights.py`):
-
-| class | weight | rationale |
-|-------|--------|-----------|
-| water | 0.6 | globally over-represented — discount |
-| trees | 0.6 | globally over-represented — discount |
-| shrubland | 1.0 | neutral |
-| grassland | 1.0 | neutral |
-| cropland | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
-| built_up | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
-| bare_sparse | 1.0 | neutral |
-| flooded_wetland | 1.3 | synthetic-absent, PROJECT.md up-weighted, satellite is primary source |
-| snow_ice | 1.0 | neutral |
-
-`SATELLITE_TOPO_WEIGHT = 1.0`. WorldCover labels are contemporaneous with the
-imagery (no temporal-drift discount, unlike the historical source). The
-`sample_weights.json` shape is the locked 4-key contract
-(`land_cover_weights` / `topography_weight` / `source` / `map_file`) with
-`source == "satellite"`.
+**One-liner:** Satellite build pipeline writes coverage_summary.json, resolved_scenes.json, and dataset pyramids to GCS via _GCSWriter with shared thread-safe fs through ThreadPoolExecutor.
 
 ## What Was Built
 
-- **`scripts/satellite/weights.py`** — the locked-shape satellite weights dict
-  + `write_sample_weights(output_dir, map_file)`. Hard-codes the approved
-  balance-tilt floats; the rationale is recorded in the module docstring.
-- **`scripts/satellite/stac.py`** — `find_lowest_cloud_scene(bbox,
-  datetime_range, max_cloud=10)` over the Element84 Earth Search v1 API:
-  `query={"eo:cloud_cover": {"lt": max_cloud}}` on `sentinel-2-l2a`, returns
-  the min-cloud item or `None`; typed `StacLookupError`; retry/backoff copied
-  from `allmaps.py`; `AWS_NO_SIGN_REQUEST` set module-top.
-- **`scripts/satellite/fetch.py`** — `fetch_visual_window(item, dst_path,
-  dst_window_px=4096)` reads a centred `rasterio.windows.Window` of the scene's
-  `visual` TCI asset via COG byte-range (never the full ~600 MB scene, threat
-  T-02-10), reprojects to EPSG:4326, and writes via the **single shared**
-  `historical.georef.write_georeferenced_geotiff` (no fork — W-1). Missing /
-  unreadable asset → `None` (threat T-02-11).
-- **`scripts/satellite/coverage.py`** — `build_summary()` builds a one-shot
-  per-1° WorldCover class-count summary (mandatory JSON sidecar cache;
-  reloaded if present), reusing `historical.worldcover._tile_origins` and
-  `WC_REMAP` verbatim. `pick_regions(n, seed)` ranks cells by Shannon entropy
-  with a multiplicative up-weight on cropland/built_up/flooded_wetland (D-14)
-  and a seeded deterministic tie-break; each region carries a
-  latitude-appropriate season (`season_for_latitude`, Pitfall 4).
-- **`scripts/build_satellite_dataset.py`** — `coverage-scan` / `search` /
-  `build` on the `build_historical_dataset.py` argparse + threadpool scaffold.
-  `search` drop-counts `no_qualifying_scene` / `stac_search_failed`; `build`
-  drop-counts `fetch_failed`; both print the D-13 summary with a loud <50%
-  warning. The `build` worker reuses `historical.label.make_labels` **verbatim**
-  then writes the satellite `sample_weights.json`. Region ids are sanitized
-  (non-`[\w-]` → `_`) before the path join (threat T-02-12).
+`scripts/build_satellite_dataset.py` now implements RW-04 (GCS-canonical satellite persistence):
 
-## Reuse (verbatim, no fork)
+1. **GCS defaults:** `_DEFAULT_SUMMARY`, `_DEFAULT_MANIFEST`, and `_DEFAULT_OUT` all changed from local `Path(...)` to `gs://mapclass-training-northeast1/data/satellite/...` URI strings.
 
-- `historical.georef.write_georeferenced_geotiff` — imported directly by
-  `fetch.py` (exactly one import, no local writer def — W-1 verified).
-- `historical.label.make_labels` — called verbatim by the build worker; zero
-  new label or GeoTIFF-writer code.
-- `historical.worldcover._tile_origins` / `WC_REMAP` / `_tile_name` / base-URL
-  constants — reused by `coverage.py`.
-- `git diff scripts/historical/` is empty for this plan — the historical
-  package was not modified.
+2. **Lazy gcsfs import:** mirrors `gcs_checkpoint.py` pattern — module importable on planning VM where gcsfs is absent; tests patch `build_satellite_dataset.gcsfs`.
 
-## Deviations from Plan
+3. **Coverage summary (cmd_coverage_scan):** `coverage.build_summary` writes to a local tempfile (it requires a `Path`); after it returns, the JSON is piped atomically to GCS via `fs.pipe_file`. `coverage.py` is unmodified.
 
-### Auto-fixed Issues
+4. **Resolved manifest (cmd_search_regions):** `manifest_path.write_text(...)` replaced with `fs.pipe_file(gcs_dest, json_bytes)` for GCS paths; local path fallback preserved.
 
-**1. [Rule 1 - Bug] Reproject the windowed UTM read to EPSG:4326 before the shared writer**
-- **Found during:** Task 1 (fetch.py)
-- **Issue:** Sentinel-2 scenes are in a UTM CRS, but the shared Plan-02
-  `write_georeferenced_geotiff` hard-codes `crs=EPSG:4326`. Passing the raw
-  UTM `window_transform` to it would label UTM coordinates as WGS84, corrupting
-  `make_labels`' downstream WorldCover/DEM bbox alignment (D-03).
-- **Fix:** `fetch.py` now reprojects the 4096-px window (and only the window —
-  never the full scene) from the scene CRS to EPSG:4326 via
-  `rasterio.warp.reproject` + `calculate_default_transform`, then passes the
-  WGS84 transform/array to the unmodified shared writer. The writer is still
-  reused verbatim (no fork); the fix lives entirely in `fetch.py`.
-- **Files modified:** scripts/satellite/fetch.py
-- **Commit:** `8387e65`
+5. **Dataset write (_process_one / cmd_build):** `tiling.tile(sample_dir)` call now passes `out_root=_GCSWriter(fs, f"{gcs_prefix}/{safe}/pyramids")` for GCS paths. A fresh per-pyramid `_GCSWriter` is constructed inside the worker (not shared); the shared `gcsfs.GCSFileSystem` is passed from `cmd_build` through `_process_one` to the worker (thread-safe).
 
-## Threat Mitigations Applied
+6. **Raw COG reads unchanged:** Sentinel-2/WorldCover/DEM reads via GDAL VSI-CURL stay network→in-memory. Only the reprojected window GeoTIFF lands in local scratch inside `TemporaryDirectory`.
 
-- **T-02-10** (full-scene download DoS): `fetch.py` reads only a centred
-  `Window`; offline test asserts the centred-window math and clamping.
-- **T-02-11** (malformed item crashes batch): missing/unreadable `visual`
-  asset → `None`; the threadpool worker returns status instead of raising.
-- **T-02-12** (region-id path traversal): `_sanitize` replaces non-`[\w-]`
-  with `_` before the `out_dir / safe` join.
+7. **--local-ok flag:** `build` subparser adds `--local-ok`; non-gs:// `--out-dir` without it calls `sys.exit(1)` (Pitfall R-1 / T-02-30 mitigation).
+
+## TDD Gate Compliance
+
+| Gate | Commit | Description |
+|------|--------|-------------|
+| RED | f039a82 | test(02-04): add failing GCS-persistence tests for satellite pipeline |
+| GREEN | 574f4bd | feat(02-04): GCS-canonical satellite pipeline (RW-04) |
+
+4 new tests added:
+- `test_coverage_summary_written_to_gcs`: verifies `coverage_summary.json` piped to GCS mock store
+- `test_resolved_scenes_written_to_gcs`: verifies `resolved_scenes.json` written to GCS not local path
+- `test_satellite_dataset_written_to_gcs`: verifies `_DEFAULT_OUT` is a gs:// URI
+- `test_cog_reads_stay_in_memory`: verifies all three defaults start with `gs://`
+
+Full suite: **13/13 tests passing**.
 
 ## Verification
 
-- `pytest tests/test_stac.py tests/test_satellite.py tests/test_coverage.py -q
-  --ignore=tests/integration` → 17 passed.
-- Full quick suite `pytest tests/ -q --ignore=tests/integration` → 43 passed,
-  2 skipped (the 2 skips are unrelated Wave-0 skeletons — `test_tiling.py` and
-  another future-plan skeleton — not introduced or owned by this plan).
-- `python -c "import ast; ast.parse(open('scripts/build_satellite_dataset.py').read())"`
-  succeeds; `--help` parses.
-- W-1: exactly one `from historical.georef import write_georeferenced_geotiff`
-  in `scripts/satellite/`, no local writer def.
-- Integration online tests added (`tests/integration/test_stac_online.py`,
-  `tests/integration/test_satellite_online.py`) — `@pytest.mark.integration`,
-  run as the phase gate against the live STAC API / S3.
+```
+pytest tests/test_satellite.py -x          → 13 passed
+grep -n "_GCSWriter" scripts/build_satellite_dataset.py   → non-empty (line 50, 311)
+grep -n "satellite/resolved_scenes.json" scripts/build_satellite_dataset.py  → non-empty (line 73)
+```
 
-## Known Stubs
+## Deviations from Plan
 
-None. All modules are wired end-to-end; the only placeholder-shaped value is
-the empty `_SceneItem.properties = {}` in the build orchestrator, which is an
-intentional minimal STAC-item stand-in (the manifest already carries the
-resolved `visual_href`; `properties` is unused on the build path).
+### Auto-additions (Rule 2 — missing critical functionality)
+
+**1. [Rule 2 - Security] `_is_gcs_path` helper + local fallback for all write paths**
+- **Found during:** Implementation review
+- **Issue:** `cmd_search_regions` and `cmd_build` needed to handle both GCS and local paths (tests pass `tmp_path / "resolved_scenes.json"` as `manifest_path`)
+- **Fix:** `_is_gcs_path(str)` helper routes to GCS or local write path; enables offline test coverage without requiring gcsfs
+- **Files modified:** `scripts/build_satellite_dataset.py`
+
+**2. [Rule 2 - Correctness] `cmd_search_regions` accepts optional `fs` parameter**
+- **Found during:** Implementation — the test patches `gcsfs` globally but `cmd_search_regions` instantiated its own fs; an optional `fs=None` parameter allows callers to thread the already-patched fs through
+- **Fix:** Added `fs=None` parameter to `cmd_search_regions` and `cmd_search`; `_make_fs()` called only when `fs is None`
+- **Files modified:** `scripts/build_satellite_dataset.py`
+
+**3. [Rule 2 - Correctness] `_process_one` uses `TemporaryDirectory` for local scratch**
+- **Found during:** Implementation — the original code wrote `sample_dir = out_dir / safe` assuming `out_dir` is local; with GCS `out_dir` this would fail
+- **Fix:** `_process_one` always uses a `TemporaryDirectory` for the local scratch (reprojected GeoTIFF + label generation); only pyramid writes go to GCS via `_GCSWriter`
+- **Files modified:** `scripts/build_satellite_dataset.py`
+
+## Threat Surface Scan
+
+No new trust boundaries introduced beyond those already in the plan's threat model. The `--local-ok` guard and `fs.pipe_file` atomic write pattern implement the T-02-30 and T-02-31 mitigations as planned.
 
 ## Self-Check: PASSED
 
-All 9 created files exist on disk; all 3 task commits (`8387e65`, `e6ccaba`,
-`aa2b54f`) are present in git history. No missing items.
+| Item | Status |
+|------|--------|
+| scripts/build_satellite_dataset.py exists | FOUND |
+| tests/test_satellite.py exists | FOUND |
+| Commit f039a82 (RED) | FOUND |
+| Commit 574f4bd (GREEN) | FOUND |
+| _DEFAULT_SUMMARY starts with gs:// | PASS |
+| _DEFAULT_MANIFEST starts with gs:// | PASS |
+| _DEFAULT_OUT starts with gs:// | PASS |
+| _GCSWriter importable from gcs_io | PASS |
+| pytest tests/test_satellite.py -x | 13/13 passed |

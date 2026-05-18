@@ -1,208 +1,196 @@
 ---
 phase: 02-build-a-dataset-of-pixel-label-pairs
-plan: 03
-subsystem: synthetic-pipeline
-status: complete
-tags: [synthetic, azgaar, eval-01, stratified-split, loss-weights]
-requires:
-  - 02-01 (test infra: pytest, conftest fixtures, skeleton test files)
-provides:
-  - per-(Azgaar source × style) canonical map directories (A4 option a)
-  - image.png + sample_weights.json in the synthetic per-map schema
-  - locked-shape synthetic sample_weights.json writer (uniform-1.0, approved)
-  - ROADMAP SC#3 topography-boundary verification gate
-  - seeded stratified frozen train/test split (EVAL-01, D-15..D-18)
-affects:
-  - scripts/label.py
-  - scripts/render.py
-  - scripts/build_dataset.py
-  - scripts/synthetic_weights.py
-  - scripts/biome_mapping.py
-  - tests/test_render.py
-  - tests/test_synthetic_weights.py
-  - tests/test_split.py
-tech-stack:
+plan: "03"
+subsystem: historical-pipeline
+tags: [gcs-io, historical, rw-04, tiling, dataset-build]
+dependency_graph:
+  requires: ["02-01", "02-02"]
+  provides: ["GCS-canonical historical dataset write path", "unregistered_manifest.json in GCS"]
+  affects: ["02-05"]
+tech_stack:
   added: []
   patterns:
-    - per-(source×style) dir with byte-identical shared label masks
-    - locked-shape sample_weights.json writer mirroring historical/label.py
-    - seeded stratified-by-template hold-out with a frozen ID-list manifest
-key-files:
+    - "lazy gcsfs import (try/except at module level)"
+    - "fs.pipe_file for atomic GCS blob writes"
+    - "_GCSWriter passed as out_root to tiling.tile (per-pyramid, not shared)"
+    - "shared gcsfs.GCSFileSystem across ThreadPoolExecutor workers"
+key_files:
   created:
-    - scripts/synthetic_weights.py
-    - tests/test_synthetic_weights.py
+    - tests/test_historical.py
   modified:
-    - scripts/label.py
-    - scripts/render.py
-    - scripts/build_dataset.py
-    - scripts/biome_mapping.py
-    - tests/test_render.py
-    - tests/test_split.py
+    - scripts/build_historical_dataset.py
 decisions:
-  - "Azgaar GeoJSON exposes NO heightmap template name -> stratification falls back to a filename-derived key (documented; user-aware)"
-  - "Synthetic loss weights = uniform 1.0 (user-approved checkpoint:decision 2026-05-15, option 'uniform') — synthetic labels are exact by construction; class imbalance deferred to Phase 3/4 DataLoader/sampler"
-  - "v1 synthetic source target N=100 Azgaar source maps (user-locked A7; research recommended N=50) — splitter is N-agnostic"
+  - "option (b) for manifest: emit_manifest writes to local scratch, then fs.pipe_file uploads bytes to GCS — avoids modifying rumsey.py"
+  - "raw Rumsey GeoTIFFs stay local scratch (re-downloadable from LUNA per RW-04 A-R5)"
+  - "_process_one receives fs + gcs_out_prefix; constructs per-sample _GCSWriter inside the worker"
 metrics:
-  tasks_completed: 4
-  tasks_total: 4
-  checkpoint: blocking checkpoint:decision RESOLVED (loss-weight approval = uniform 1.0)
-  completed_date: 2026-05-15
+  duration: "~12 minutes"
+  completed: "2026-05-16"
+  tasks_completed: 1
+  files_changed: 2
 ---
 
-# Phase 02 Plan 03: Synthetic Pipeline (per-(source×style), weights, frozen split) Summary
+# Phase 02 Plan 03: Historical GCS-Canonical Pipeline Summary
 
-**One-liner:** Restructured the synthetic pipeline to one canonical
-`<azgaar_id>__<style>/` directory per (Azgaar source × render style) with
-byte-identical shared label masks, installed the ROADMAP SC#3
-topography-boundary verification gate, finalised the synthetic loss weights to
-the user-approved uniform-1.0, and implemented the seeded stratified-by-template
-train/test split with a frozen `split.json` (EVAL-01, D-15..D-18) at the
-user-locked N=100 v1 target.
-
-## Status
-
-**COMPLETE — all 4 tasks executed.** The blocking loss-weight
-`checkpoint:decision` was resolved (approved: **uniform 1.0**) and Tasks 3 & 4
-were executed in this continuation run.
+**One-liner:** GCS-canonical historical pipeline: `cmd_search` pipes `unregistered_manifest.json` to `mapclass-training-northeast1/data/historical/raw/` via `fs.pipe_file`; `cmd_build` streams pyramid output through `_GCSWriter` to `data/historical/dataset/<sample>/pyramids`; raw Rumsey GeoTIFFs stay ephemeral local scratch (RW-04).
 
 ## What Was Built
 
-### Task 1 — per-(source×style) output + image.png (commit `9ec52e2`)
+### Task 1: build_historical_dataset.py — GCS manifest + GCS dataset write (TDD)
 
-- `scripts/label.py`: split rasterisation into `make_label_arrays()` (returns the
-  shared `land_cover`/`topography` PIL images) and reworked `make_labels()` to
-  additionally write `image.png` (from a passed-in render) and
-  `sample_weights.json`. Existing `_bbox`/`_rings`/polygon-fill logic and the
-  `NODATA`/`WATER_TOPO=255` sentinels are unchanged.
-- `scripts/render.py`: added `render_one(geojson_path, style) -> Image` (no disk
-  write) so the per-style build hands the rendered image straight to
-  `make_labels` as `image.png`. `render_map` retained for backward compatibility.
-- `scripts/build_dataset.py`: `build_one_source()` rasterises the shared labels
-  **once** per source and writes them byte-identically into each
-  `<id>__<style>/` directory (A4 option (a)). Source stems are sanitised
-  (`[^\w-]` → `_`, T-02-08). Per-source `try/except` keeps one bad source from
-  aborting the batch (T-02-09).
-- `tests/test_render.py`: `test_output_dimensions_match`,
-  `test_per_source_style_dirs`, `test_shared_label_byte_identical`.
+**RED commit:** `2339afd` — failing tests covering three behaviours (manifest to GCS, dataset to GCS via _GCSWriter, raw .tif stays local).
 
-### Task 2 — ROADMAP SC#3 topography-boundary gate (commit `c2347f7`)
+**GREEN commit:** `e3fcf0c` — implementation satisfying all tests.
 
-- `tests/test_render.py::test_synthetic_topo_locked_boundaries`: concrete
-  `assert h_to_topo(...) == TOPO_IDX[...]` at and around the locked cuts
-  (flat ≤20 / hilly 20–55 / mountainous >55 over the normalized `[0,100]`
-  domain) plus water (`h < H_SEA_LEVEL`) → `None`. It is the SC#3 verification
-  gate (not an image-dimension proxy).
+Changes to `scripts/build_historical_dataset.py`:
 
-### Checkpoint — loss-weight decision RESOLVED
+1. **Lazy gcsfs import** at module level (try/except pattern from `gcs_checkpoint.py`). The module can be imported offline where gcsfs is absent; tests patch `build_historical_dataset.gcsfs`.
 
-The blocking `checkpoint:decision` (synthetic per-source loss-weight values)
-was presented to and resolved by the user on **2026-05-15**.
-**Approved option: `uniform`** — all 9 land-cover classes = `1.0`,
-`topography_weight = 1.0`. Rationale: synthetic labels are exact by
-construction (rasterised directly from the Azgaar source), so no temporal-drift
-discount applies; class-imbalance correction is deferred to the Phase 3/4
-DataLoader/sampler, not folded into the per-source weight layer.
+2. **Import `_GCSWriter`, `GCS_PROJECT`, `DATA_PREFIX` from `gcs_io`** — pins to the single authoritative constants source.
 
-### Task 3 — finalised synthetic loss weights (commit `d595d60`)
+3. **`cmd_search` — manifest to GCS (RW-04):**
+   - `rumsey.emit_manifest` writes to local scratch (`raw_dir/unregistered_manifest.json`) — no modification to `rumsey.py` (PATTERNS.md option b).
+   - Immediately after: `fs.pipe_file(_HISTORICAL_MANIFEST_GCS_KEY, manifest_bytes)` uploads the bytes to `mapclass-training-northeast1/data/historical/raw/unregistered_manifest.json`.
+   - `raw_dir / "georeferenced"` is created before download begins (ensures emit_manifest parent exists).
 
-- `scripts/synthetic_weights.py`: stripped all PROVISIONAL / checkpoint-pending
-  markers and comments; `SYNTHETIC_LC_WEIGHTS` finalised to the approved
-  uniform `1.0` for all 9 canonical classes; `SYNTHETIC_TOPO_WEIGHT = 1.0`.
-  Dict shape is locked set-equal to `HISTORICAL_LC_WEIGHTS`. The
-  `write_sample_weights()` writer is unchanged (locked-shape JSON:
-  `land_cover_weights` / `topography_weight` / `source` / `map_file`,
-  `source == "synthetic"`).
-- `tests/test_synthetic_weights.py` (new): asserts the 9-key set equals
-  `HISTORICAL_LC_WEIGHTS` keys, every value is a float, the approved
-  uniform-1.0 values, and the written JSON round-trips with the locked
-  top-level keys + `source == "synthetic"`.
-- `scripts/historical/label.py` left unmodified (verified via empty `git diff`).
+4. **`_process_one` — pyramid output to GCS:**
+   - Receives `fs` (shared `gcsfs.GCSFileSystem`, thread-safe) and `gcs_out_prefix` (bare GCS path).
+   - When `gcs_out_prefix` is set: creates `sample_dir` in `tempfile.mkdtemp` scratch; calls `tiling.tile(sample_dir, out_root=_GCSWriter(fs, gcs_prefix))` where `gcs_prefix = f"{gcs_out_prefix}/{sample_name}/pyramids"`.
+   - Each `_GCSWriter` is constructed inside the worker, not shared across threads (_GCSWriter is not thread-safe; `gcsfs.GCSFileSystem` is).
 
-### Task 4 — seeded stratified frozen split, N=100 v1 (commit `9d40f38`)
+5. **`cmd_build` — detect GCS out_dir:**
+   - `is_gcs = out_dir_str.startswith("gs://")` — branches on local vs. GCS.
+   - GCS path: instantiates shared `fs`, strips `gs://` for bare prefix, skips `out_dir.mkdir`.
+   - Local path: keeps `Path(out_dir).mkdir(parents=True, exist_ok=True)` for tests/offline use.
+   - Passes `fs` and `gcs_out_prefix` through the `ThreadPoolExecutor` submit call.
 
-- `scripts/build_dataset.py`: upgraded to the `build_historical_dataset.py`
-  argparse sub-command scaffold (`add_subparsers(dest="command",
-  required=True)` + `add_common`), `build` sub-command.
-- `template_key()`: derives the stratification (continent-template) key from
-  the source filename — strips the trailing numeric/index suffix
-  (`europe_07` → `europe`); a no-prefix source becomes its own singleton
-  stratum (never starved). This is the documented fallback because Azgaar
-  GeoJSON exports expose no heightmap-template field.
-- `stratified_split()`: deterministic; seeded with the fixed constant
-  `_SPLIT_SEED = 42` (salted per-template for stability as sources are
-  appended); `~15%` per-template hold-out (`round(n * 0.15)`, ≥1 for a
-  non-empty template); operates at the WHOLE Azgaar source-map level so ALL
-  render styles of a held-out source go to `test/` (D-15, D-16).
-- `load_or_create_split()`: on the FIRST build computes the split and writes
-  `data/synthetic/split.json` listing the held-out test IDs; on EVERY
-  subsequent build reads it and never recomputes/mutates it (D-17, D-18).
-- `build()`: routes each source into sibling `train/<id>__<style>/` vs
-  `test/<id>__<style>/` by the frozen test-ID list; new sources after the
-  first build always land in `train/`.
-- N=100 / ~15–16-per-template v1 target documented in the `build`
-  sub-command help line and the module epilog (user-locked A7; research
-  recommended N=50).
-- `tests/test_split.py` (filled): `test_seeded_split_deterministic`,
-  `test_stratified_holdout_proportional`,
-  `test_split_is_whole_source_no_template_collision`,
-  `test_no_train_test_intersection` (EVAL-01, also asserts all styles of a
-  held-out source under `test/` and none under `train/` — D-15),
-  `test_split_manifest_frozen` (EVAL-01 / D-18: rebuild with new sources →
-  `split.json` byte-unchanged, new IDs land in `train/`).
+6. **Argparse (Pitfall R-1 guard):**
+   - `--out-dir` default changed to `"gs://mapclass-training-northeast1/data/historical/dataset"`.
+   - `--local-ok` flag added to both `build` and `full` subparsers.
+   - Startup guard: non-`gs://` `--out-dir` without `--local-ok` calls `parser.error(...)` (hard exit).
+
+New file `tests/test_historical.py`:
+
+- `TestManifestWrittenToGCS.test_manifest_written_to_gcs` — verifies `_MockGCSFileSystem._store` contains the manifest at the canonical GCS key; confirms no raw `.tif` in GCS.
+- `TestHistoricalDatasetWrittenToGCS.test_historical_dataset_written_to_gcs` — intercepts `tiling.tile` calls; asserts `out_root` is a `_GCSWriter` with prefix under `historical/dataset/.../pyramids`.
+- `TestRawGeoTIFFStaysLocal.test_raw_geotiff_stays_local` — tracks `pipe_file` calls; asserts zero `.tif` uploads.
+
+## Verification Results
+
+```
+pytest tests/test_historical.py -x -v
+3 passed in 0.47s
+```
+
+Acceptance criteria verified:
+- `grep -n "_GCSWriter" scripts/build_historical_dataset.py` — non-empty (lines 13, 50, 169, 172)
+- `grep -n "historical/raw/unregistered_manifest.json" scripts/build_historical_dataset.py` — non-empty (line 59)
+- `pytest tests/test_historical.py::TestManifestWrittenToGCS::test_manifest_written_to_gcs -x` — exits 0
+- `pytest tests/test_historical.py -x` — exits 0
 
 ## Deviations from Plan
 
 ### Auto-fixed Issues
 
-**1. [Rule 1 - Bug] Float-precision mis-bin at the hilly/mountainous cut**
-- **Found during:** Task 2 (writing the SC#3 boundary gate)
-- **Issue:** `biome_mapping.normalize_land_h(64)` evaluates to
-  `55.00000000000001` (IEEE-754 division error). The locked rule
-  `norm <= 55 → hilly` therefore mis-binned a land cell sitting *exactly* on
-  the SC#3 hilly/mountainous cut into **mountainous**. This is a real
-  ground-truth-correctness bug, not a test-precision issue.
-- **Fix:** `h_to_topo` now rounds the normalized value to 6 decimal places
-  (far finer than the smallest reachable spacing of `100/80 = 1.25` per unit
-  of integer `h`) before the locked comparison, so the inclusive upper bounds
-  (`≤20`, `≤55`) hold exactly. The locked SC#3 boundary values themselves are
-  unchanged — the test was not loosened; the source was fixed (per the Task 2
-  instruction).
-- **Files modified:** `scripts/biome_mapping.py`, `tests/test_render.py`
-  (added an explicit `h_to_topo(64) == hilly` regression guard)
-- **Commit:** `c2347f7`
+**1. [Rule 1 - Bug] geo_dir not created before emit_manifest**
+- **Found during:** GREEN phase (first test run)
+- **Issue:** `rumsey.emit_manifest` writes to `raw_dir/unregistered_manifest.json`; the parent `raw_dir` was not created before the call, causing `FileNotFoundError` when the test mock tried to write the manifest.
+- **Fix:** Added `geo_dir.mkdir(parents=True, exist_ok=True)` before `rumsey.search_maps()` call in `cmd_search` — ensures both `raw_dir` and `raw_dir/georeferenced` exist on local scratch prior to any writes.
+- **Files modified:** `scripts/build_historical_dataset.py`
+- **Commit:** `e3fcf0c`
 
-No other deviations — Tasks 3 & 4 executed exactly as written against the
-resolved checkpoint decision.
+None others — plan executed as specified.
 
-## Template-Name Finding (recorded per Task 1)
+## TDD Gate Compliance
 
-**Azgaar GeoJSON exposes NO heightmap template name.** There are no raw Azgaar
-exports on disk (`data/synthetic/raw/` does not exist), and the Plan-01
-`sample_azgaar_geojson` conftest fixture carries only `properties.biome` and
-`properties.height` — no per-feature template property and no top-level
-`metadata`/`info` block. Per the plan's documented fallback, the seeded
-stratified split derives its stratification key from the source filename
-(`template_key()` strips the trailing numeric suffix). **User awareness
-flagged:** if real Azgaar exports are later found to expose a template field,
-`template_key()` should be revisited **before** the first `split.json` is
-frozen (it is frozen on first real build).
+| Gate | Commit | Status |
+|------|--------|--------|
+| RED (test commit) | 2339afd | PASS — 3 tests fail as expected before implementation |
+| GREEN (feat commit) | e3fcf0c | PASS — 3 tests pass after implementation |
+| REFACTOR | N/A | No structural cleanup needed |
 
-## Loss-Weight Decision (resolved)
+## Threat Surface Scan
 
-The synthetic loss-weight `checkpoint:decision` is resolved: **uniform 1.0**
-for all 9 land-cover classes and `topography_weight`. `synthetic_weights.py`
-has been finalised and all PROVISIONAL markers removed. Class-imbalance
-correction is intentionally deferred to the Phase 3/4 DataLoader/sampler, not
-the per-source weight layer.
+No new trust boundaries beyond those declared in the plan's `<threat_model>`. The implementation matches the declared mitigations:
+- T-02-20: `--out-dir` defaults `gs://`, non-`gs://` requires `--local-ok` (Pitfall R-1 guard).
+- T-02-21: `pipe_file` is atomic per object; missing-file SKIP guard precedes `tile()`.
+- T-02-22: ADC-only lazy-gcsfs pattern; no secrets in source.
+- T-02-23: raw TIFs stay local (re-downloadable from LUNA).
 
-## Self-Check
+## Known Stubs
 
-- `scripts/synthetic_weights.py` — present, finalised (no PROVISIONAL markers)
-- `scripts/build_dataset.py` — argparse sub-command scaffold + frozen split
-- `tests/test_synthetic_weights.py` — present, 4 tests passing
-- `tests/test_split.py` — present, 5 tests passing (EVAL-01 guardrails)
-- `scripts/historical/label.py` — unmodified (empty git diff)
-- Commits `9ec52e2`, `c2347f7`, `d595d60`, `9d40f38` — present on the worktree branch
-- Quick suite: 26 passed, 4 skipped, 0 failed (`pytest tests/ -x --ignore=tests/integration`)
+None — the implementation is complete. `cmd_search` and `cmd_build` both write to GCS as specified. The plan's goal (RW-04: historical outputs survive ephemeral compute) is achieved.
 
 ## Self-Check: PASSED
+
+- `tests/test_historical.py` exists: FOUND
+- `scripts/build_historical_dataset.py` modified: FOUND
+- Commit `2339afd` (RED): FOUND
+- Commit `e3fcf0c` (GREEN): FOUND
+
+## Post-Execution Findings (2026-05-18)
+
+The GCS-canonical pipeline (this plan) was offline/mock-verified above. This
+section records the first **real end-to-end execution** against live GCS +
+the David Rumsey LUNA API + Allmaps.
+
+### Finding F-1: Historical v1 dataset ceiling is 4 maps (scope, not bug)
+
+`build_historical_dataset.py full --max-maps 1555` over the *entire* Rumsey
+1500–1700 pool (1555 maps, ranked by metadata richness):
+
+| reason | count |
+|--------|-------|
+| `ok` (Allmaps-georeferenced → built) | **4** |
+| `out_of_scale` | 7 |
+| `not_in_allmaps` | 1544 |
+| `gcps_insufficient` / `download_failed` | 0 |
+
+≈0.26% of the regional-scale 16th–17th c. Rumsey corpus is registered in
+Allmaps. The pipeline only ingests maps Allmaps already has GCPs for;
+semi-automatic (PaliGemma cross-corr + TPS) and manual (MapWarper/QGIS)
+georeferencing are both **Deferred to v2** (STATE.md Deferred Items, Phase 2
+planning 2026-05-15). A larger historical set is therefore blocked on that
+deferred work — this is a designed scope constraint, not a defect.
+
+**Built:** `gs://mapclass-training-northeast1/data/historical/dataset/` — 4
+sample dirs, each with `_BUILD_COMPLETE`, ~62 pyramids:
+`RUMSEY_8_1_{275937_90049132,305328_90075898,369928_90137299,377140_90143281}__plate0`.
+
+**Downstream impact:** Phase 4 historical training signal is 4 maps. The
+class-conditional historical loss weights still apply, but the satellite
+family (199/199 built) is the viable v1 ground-truth source. EVAL-01 and any
+historical-reliant verification should treat the historical contribution as
+negligible for v1.
+
+**Open observation (parked, not yet investigated):** the `py_r000_c000`
+(top-left corner) tile of each of the 4 maps captures title pages /
+cartouches / a book binding rather than terrain — the georeferenced GeoTIFFs
+include non-map page regions that get labeled against WorldCover/DEM. Surfaced
+via `notebooks/inspect_datasets.ipynb`; quantification deferred.
+
+### Finding F-2: Four runtime defects fixed (commit `133ca84`)
+
+Real execution exposed defects the mock tests did not. Fixed in `133ca84`
+(branch `phase4`):
+
+1. `build_satellite_dataset.py cmd_coverage_scan` — `NamedTemporaryFile`
+   empty-file mistaken by `coverage.build_summary` for a cached summary →
+   `json.loads("")` crash. Fixed with `force=True`.
+2. `build_satellite_dataset.py cmd_search` — passed the `gs://` summary URI
+   into non-GCS-aware `pick_regions`/`build_summary` (`Path(uri).exists()`
+   always False) → silent full ~20k-tile global WorldCover rescan instead of
+   reusing the cached summary. Fixed by pulling the GCS object to a local
+   temp first.
+3. `build_historical_dataset.py cmd_build` — non-recursive
+   `georeferenced/*.tif` glob never matched the nested
+   `<id>__plate<i>/source.tif` download layout → "No GeoTIFFs found". Fixed
+   with `rglob`.
+4. `build_historical_dataset.py _process_one` — `sample_name = tif.stem` was
+   the constant `"source"` for every map → all maps collapsed into one
+   output dir; `_BUILD_COMPLETE` then skipped all but the first. Fixed to
+   derive the name from the unique per-plate parent dir.
+
+Satellite executed cleanly post-fix: coverage-scan (20233 cells) → search
+(199/200 scenes resolved, 1 cloud-dropped) → build (199/199). Both families'
+GCS layouts verified (sample dirs + `_BUILD_COMPLETE` sentinels).

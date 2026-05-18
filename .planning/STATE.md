@@ -3,15 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-05-15T22:49:36.323Z"
-last_activity: 2026-05-15 -- Phase 03 execution started
+stopped_at: Phase 02 REWORK context gathered (GCS-canonical dataset; all 5 plans to be replanned; prior verification void)
+last_updated: "2026-05-16T21:28:19.859Z"
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 1
-  total_plans: 10
-  completed_plans: 5
-  percent: 50
+  total_plans: 15
+  completed_plans: 9
+  percent: 20
 ---
 
 # Project State
@@ -23,18 +22,49 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 **Core value:** A trained segmentation model on HuggingFace producing dense per-pixel
 land-cover and topography predictions on illustrated regional maps, evaluated by
 joint per-pixel NLL on held-out synthetic maps.
-**Current focus:** Phase 03 — build-a-dense-semantic-segmentation-pipeline
+**Current focus:** Phase 02 — build-a-dataset-of-pixel-label-pairs
+comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 03 (build-a-dense-semantic-segmentation-pipeline) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 03
-Last activity: 2026-05-15 -- Phase 03 execution started
-working branch `phase1.5`; working tree clean — all Phase 2 planning artifacts
-committed (HEAD `9ddd6ab`). Allmaps integration already tracked as of `1e43917`.
+Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — IN PROGRESS,
+  GATED. Plans 04-01..04-04 code-complete; 04-05 (GPU training grid)
+  DEFERRED behind the GPU-host gate AND now additionally BLOCKED on Phase 6.
+Plan: 04-05 of 5 (deferred + Phase-6-gated)
+Status: Phase 2 datasets (re)built this session (historical 4, satellite
+  199). Phase 6 added to roadmap (page-border void) — must execute before
+  any 04-05 GPU training. Phase 5 (publish) not started.
+(Prior stale header read "Phase: 02 EXECUTING / Plan 1 of 5" — corrected
+ 2026-05-18; that never reflected the post-rework reality.)
+working branch `phase4` (HEAD c6e3af4), in sync with origin/phase4 through 229539d;
+session commits 229539d..c6e3af4 NOT yet pushed.
 
-Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
+Completed this run:
+
+- 04-01 train_utils (weighted joint loss, teacher-forced c2f step, val carve)
+- 04-02 gcs_checkpoint (preemption-safe save/resume, mocked offline suite)
+- 04-03 evaluate_seg (joint per-pixel NLL harness, zero-leakage guard)
+- 04-04 finetune_seg (probe-mode loop + 04-HUMAN-UAT.md GPU-host gate)
+
+OOM RESOLVED: train_step_variant_a/b deferred-backward bug fixed (commit
+229539d, per-tile backward). Verified: wave-1 suite ~13–15.6 GB → ~5 GB;
+all waves peaked <4 GB, zero OOM. Diagnosis + logs in oom-diagnostics/
+(untracked). Root cause memo: project memory phase4-oom-rootcause.
+
+DEFERRED — 04-05 blocking gate (resume requires BOTH):
+
+1. Run the GPU-host deferred steps in
+   .planning/phases/04-*/04-HUMAN-UAT.md (SigLIP Variant B cost probe);
+   capture the `PROBE RESULT |` line (GPU-hrs/epoch + projected full-grid hrs).
+
+2. Re-run /gsd:execute-phase 4 --wave 4 — answer the D-05 grid-breadth gate
+   (option-a/b/c) with the probe numbers pasted. Then Task 2 (offline
+   report_comparison.py + manifest + report) auto-executes scoped to the choice.
+
+new Phase 5 owns deliverable selection + HuggingFace publish (user decision
+2026-05-16, see 04-CONTEXT.md `<domain>`).
+
+Progress: [█████████░] 93% (14/15 plans; phase 04 minus the deferred 04-05 gate)
 
 ## Performance Metrics
 
@@ -60,6 +90,14 @@ Progress: [██░░░░░░░░] 25% (Phase 1 of 4 complete)
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 6 added: Historical page-border void detection and ignore-label
+  handling (void/ignore sentinel — NOT a 10th predicted class; reuses 255;
+  folds in the latent `train_utils.py` missing-`ignore_index` fix). Triggered
+  by the parked non-terrain-tile observation from the 02-03 Post-Execution
+  Findings. To go through spec → discuss → plan.
+
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table and the `<decisions>`
@@ -83,7 +121,32 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet.
+- **Historical dataset is 4 samples (v1 ceiling).** Empirical execution
+  (2026-05-18) of `build_historical_dataset.py full --max-maps 1555` over the
+  *entire* David Rumsey 1500–1700 pool yielded `ok: 4`, `out_of_scale: 7`,
+  `not_in_allmaps: 1544` — ~0.26% Allmaps georeference coverage. The pipeline
+  only ingests maps Allmaps already has GCPs for; a meaningfully larger
+  historical set is blocked on the two **Deferred to v2** Georeferencing items
+  below (PaliGemma semi-automatic + manual MapWarper/QGIS). Not a bug —
+  scope-constrained by design. Downstream: Phase 4 historical training signal
+  is 4 maps; satellite (199 samples) is the viable v1 ground-truth source.
+  Built artifacts: `gs://mapclass-training-northeast1/data/historical/dataset/`
+  (4 dirs + sentinels). See `phases/02-.../02-03-SUMMARY.md` Post-Execution
+  Findings.
+
+- **⛔ GATE: Phase 6 blocks the 04-05 GPU training grid.** Phase 6
+  (historical page-border void detection) changes historical training
+  labels (emits `255` void for non-terrain page regions). The deferred
+  Phase-4 04-05 training matrix consumes the historical dataset; running
+  it pre-Phase-6 wastes GPU fitting scanned paper and forces a retrain.
+  The `ignore_index=255` loss fix (`e65bd8c`) is already in and expects
+  those void labels. **Resume order:** Phase 6 (spec→discuss→plan→execute)
+  → rebuild the 4 historical samples → THEN resume the deferred
+  `04-HUMAN-UAT.md` GPU work. The SigLIP Variant B cost probe may run
+  earlier; the full grid may not. Enforced in `04-HUMAN-UAT.md` blocking
+  precondition + ROADMAP Phase 4/6 entries. (User directive 2026-05-18:
+  "as long as the map edge stuff happens before we waste GPU on map
+  training" — Phase 5 ordering is irrelevant to this gate.)
 
 ## Deferred Items
 
@@ -100,7 +163,12 @@ Items acknowledged and carried forward:
 
 ## Session Continuity
 
-Last session: 2026-05-15T20:28:15.462Z
+Last session: 2026-05-16T20:19:07.080Z
+Stopped at: Phase 02 REWORK context gathered (GCS-canonical dataset; all 5 plans to be replanned; prior verification void)
+(dc4f585..c059f9c) to origin so the networked box can pull. Phase 4 is
+planned + checker-verified (PASS iter 2/3). Next action: /gsd-execute-phase 4.
+
+[older note retained for history]
 Stopped at: Phase 3 context gathered
 iteration), all coverage gates green, committed at `9ddd6ab`. Next action:
 `/gsd-execute-phase 2`. Working tree clean; nothing to recover.
@@ -115,4 +183,4 @@ Resume notes:
 
 - Wave order: W0=02-01 (test infra) · W1=02-02+02-03 · W2=02-04 · W3=02-05.
 
-Resume file: .planning/phases/03-build-a-dense-semantic-segmentation-pipeline/03-CONTEXT.md
+Resume file: .planning/phases/02-build-a-dataset-of-pixel-label-pairs/02-CONTEXT.md
