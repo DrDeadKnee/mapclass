@@ -240,3 +240,37 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 3. Build a dense semantic segmentation pipeline | 5/5 | Complete | 2026-05-16 |
 | 4. Fine-tune and evaluate the segmentation model | 0/TBD | Not started | - |
 | 5. Explore, select, and publish the segmentation model | 0/TBD | Not started | - |
+
+### Phase 6: Historical page-border void detection and ignore-label handling
+
+**Goal:** Automatically detect non-terrain page regions (title pages,
+cartouches, bindings, blank margins) in georeferenced Rumsey historical
+scans and label them with a void/ignore sentinel that the segmentation
+loss masks out — so the 4 (and future) historical samples stop training
+the model on paper instead of terrain.
+**Requirements**: TBD (derive in spec)
+**Depends on:** Phase 2 (historical pipeline + 4 built samples; modifies
+`scripts/historical/label.py`). Independent of Phases 3–5.
+**Plans:** 0 plans
+
+**Settled design (do not re-litigate in spec):**
+- Void/ignore label, **NOT** a 10th predicted class — preserves the
+  README 9-class canonical taxonomy; `evaluate_seg.py:238` already masks
+  `lc_gt >= 9` so eval needs zero changes.
+- Reuse the existing `255` NODATA sentinel (already emitted by
+  `label.py` via the "unexpected WorldCover → NODATA" path).
+
+**Scope (refine in spec/plan):**
+1. Automated page-border detection in `scripts/historical/label.py`
+   emitting `255` for non-map-content pixels (hard part: regions
+   *inside* the scanned sheet, not just outside-warp alpha fill).
+2. Fold in latent-bug fix: add `ignore_index=255` to both
+   `F.cross_entropy` calls in `scripts/seg/train_utils.py` (Phase-4
+   training would otherwise CUDA-assert on the 255 labels already emitted).
+3. Rebuild the 4 historical samples to GCS.
+4. Document the void sentinel in the README taxonomy section.
+
+Origin: parked observation in 02-03-SUMMARY Post-Execution Findings.
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 6 to break down)

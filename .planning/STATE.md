@@ -84,6 +84,14 @@ Progress: [█████████░] 93% (14/15 plans; phase 04 minus the 
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 6 added: Historical page-border void detection and ignore-label
+  handling (void/ignore sentinel — NOT a 10th predicted class; reuses 255;
+  folds in the latent `train_utils.py` missing-`ignore_index` fix). Triggered
+  by the parked non-terrain-tile observation from the 02-03 Post-Execution
+  Findings. To go through spec → discuss → plan.
+
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table and the `<decisions>`
