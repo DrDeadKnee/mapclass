@@ -27,9 +27,15 @@ comparison report. Publication moved to new Phase 5.
 
 ## Current Position
 
-Phase: 02 (build-a-dataset-of-pixel-label-pairs) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 02
+Phase: 04 (fine-tune-and-evaluate-the-segmentation-model) — IN PROGRESS,
+  GATED. Plans 04-01..04-04 code-complete; 04-05 (GPU training grid)
+  DEFERRED behind the GPU-host gate AND now additionally BLOCKED on Phase 6.
+Plan: 04-05 of 5 (deferred + Phase-6-gated)
+Status: Phase 2 datasets (re)built this session (historical 4, satellite
+  199). Phase 6 added to roadmap (page-border void) — must execute before
+  any 04-05 GPU training. Phase 5 (publish) not started.
+(Prior stale header read "Phase: 02 EXECUTING / Plan 1 of 5" — corrected
+ 2026-05-18; that never reflected the post-rework reality.)
 working branch `phase4` (HEAD c6e3af4), in sync with origin/phase4 through 229539d;
 session commits 229539d..c6e3af4 NOT yet pushed.
 
@@ -127,6 +133,20 @@ None yet.
   Built artifacts: `gs://mapclass-training-northeast1/data/historical/dataset/`
   (4 dirs + sentinels). See `phases/02-.../02-03-SUMMARY.md` Post-Execution
   Findings.
+
+- **⛔ GATE: Phase 6 blocks the 04-05 GPU training grid.** Phase 6
+  (historical page-border void detection) changes historical training
+  labels (emits `255` void for non-terrain page regions). The deferred
+  Phase-4 04-05 training matrix consumes the historical dataset; running
+  it pre-Phase-6 wastes GPU fitting scanned paper and forces a retrain.
+  The `ignore_index=255` loss fix (`e65bd8c`) is already in and expects
+  those void labels. **Resume order:** Phase 6 (spec→discuss→plan→execute)
+  → rebuild the 4 historical samples → THEN resume the deferred
+  `04-HUMAN-UAT.md` GPU work. The SigLIP Variant B cost probe may run
+  earlier; the full grid may not. Enforced in `04-HUMAN-UAT.md` blocking
+  precondition + ROADMAP Phase 4/6 entries. (User directive 2026-05-18:
+  "as long as the map edge stuff happens before we waste GPU on map
+  training" — Phase 5 ordering is irrelevant to this gate.)
 
 ## Deferred Items
 

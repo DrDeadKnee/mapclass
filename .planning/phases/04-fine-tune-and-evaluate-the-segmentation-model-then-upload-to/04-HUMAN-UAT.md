@@ -20,6 +20,36 @@ follow Sections 1–8 in order.
 
 ---
 
+## ⛔ BLOCKING PRECONDITION — Phase 6 must complete first
+
+**Do NOT run any GPU training in this gate until Phase 6 (historical
+page-border void detection) is complete AND the 4 historical samples have
+been rebuilt to GCS.**
+
+Rationale: Phase 6 changes the historical training labels (emits the `255`
+void sentinel for non-terrain page regions — title pages, cartouches,
+bindings). The Phase-4 training matrix here consumes
+`gs://mapclass-training-northeast1/data/historical/dataset/`. Training the
+grid against the *pre-Phase-6* historical labels would burn GPU on a model
+fit partly to scanned paper, requiring a full retrain. The
+`ignore_index=255` loss fix (commit `e65bd8c`) is already in place and
+expects those void labels to exist.
+
+Resume checklist before proceeding past this point:
+
+- [ ] Phase 6 executed and verified (`spec → discuss → plan → execute`)
+- [ ] `build_historical_dataset.py build` re-run; the 4
+      `gs://.../data/historical/dataset/RUMSEY_*__plate0/` dirs rebuilt with
+      fresh `_BUILD_COMPLETE` sentinels (post-Phase-6 labels)
+- [ ] STATE.md Blockers/Concerns gate cleared
+
+The SigLIP Variant B **cost probe** (a few steps, GPU-minutes, not the
+deliverable model) MAY run before Phase 6 — it only measures GPU-hrs/epoch
+and rebuilding 4 of ~203 samples will not move that number. The **full
+04-05 training grid** MUST NOT.
+
+---
+
 ## Section 0: Push-Before-Pull Discipline
 
 On the **planning VM** (before switching to the GPU host):

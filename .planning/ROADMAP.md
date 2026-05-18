@@ -170,6 +170,11 @@ comparison report. Stops before deliverable selection / publication (Phase 5).
 publication split out to a new Phase 5 so the user can hands-on test the
 trained models/dataset before delivering.
 **Depends on**: Phase 3
+**⛔ Precondition (added 2026-05-18)**: the deferred 04-05 GPU training
+grid is BLOCKED until Phase 6 (historical page-border void detection)
+completes and the 4 historical samples are rebuilt. The 04-04 cost probe
+may run earlier; the full grid may not. See `04-HUMAN-UAT.md` blocking
+precondition.
 **Requirements**: EVAL-02 (computation only), EVAL-03
 **Success Criteria** (what must be TRUE):
 
@@ -251,6 +256,12 @@ the model on paper instead of terrain.
 **Requirements**: TBD (derive in spec)
 **Depends on:** Phase 2 (historical pipeline + 4 built samples; modifies
 `scripts/historical/label.py`). Independent of Phases 3–5.
+**Blocks:** Phase 4 — the deferred 04-05 GPU training grid MUST NOT run
+until Phase 6 completes and the 4 historical samples are rebuilt
+(otherwise GPU is wasted fitting scanned paper). Gate enforced in
+`phases/04-.../04-HUMAN-UAT.md` blocking precondition + STATE.md
+Blockers/Concerns. Sequencing is "before 04-05 GPU training," NOT merely
+"before Phase 5" (Phase 5 ordering is irrelevant to this gate).
 **Plans:** 0 plans
 
 **Settled design (do not re-litigate in spec):**
