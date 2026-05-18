@@ -25,19 +25,18 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — PAUSED (wave-1 human-verify checkpoints)
-Plan: Wave 1 (01-01, 01-02) code merged to lrp-experiment-gsd; both paused at Task 3 checkpoint:human-verify. Wave 2 (01-03) blocked until both verified.
-Status: Awaiting user verification of 01-01 (ViT repro heatmap) and 01-02 (full 1,544 GCS mirror + idempotency)
-Last activity: 2026-05-18 -- Wave 1 merged (config.py cross-plan conflict reconciled; run_mirror_model.py runner added); awaiting human-verify
+Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — PAUSED (01-02 human-verify outstanding)
+Plan: 01-01 COMPLETE (human-verify approved 2026-05-18). 01-02 paused at Task 3 checkpoint:human-verify (mirror not yet run). Wave 2 (01-03) blocked on 01-02 + a GPU VM.
+Status: 01-01 finalized; awaiting user verification of 01-02 (full 1,544 GCS mirror + idempotency)
+Last activity: 2026-05-18 -- 01-01 approved + signed-relevance viz fix (a9763ed); pinned 3.10 venv rebuilt; D-09 added to 01-03
 
-Progress: [██░░░░░░░░] Wave 1 implemented, unverified (0/3 plans formally complete)
+Progress: [████░░░░░░] 1/3 plans complete (01-01); 01-02 unverified; 01-03 blocked
 
 ### Resume
 
-Verification runbook (run from repo root, pinned `.venv`):
-- 01-01: open `/tmp/00_vit_repro_executed.ipynb` (rendered) or rebuild venv + Restart-&-Run-All `notebooks/00_vit_repro.ipynb`; judge 14×14 relevance is structured.
-- 01-02: `.venv/bin/python notebooks/scripts/run_mirror_model.py` (x2 → 2nd converges); `.venv/bin/python notebooks/scripts/run_ingest.py` (x2 → 1,544 coverage, 2nd all-skipped).
-On verdict: re-run `/gsd-execute-phase 1` — discovery sees no SUMMARY-complete plans yet; finalize checkpoints then Wave 2. Wave 2 (01-03 attribution) needs a GPU VM (this box has no CUDA).
+Remaining verification (run from repo root, pinned 3.10 `.venv`):
+- 01-02: `.venv/bin/python notebooks/scripts/run_mirror_model.py` (x2 → 2nd prints "converged"); `.venv/bin/python notebooks/scripts/run_ingest.py` (x2 → 1,544 coverage, 2nd all-skipped); `gcloud storage ls -l gs://mapclass-training-northeast1/data/ | head` (no 0-byte).
+On 01-02 verdict: re-run `/gsd-execute-phase 1` — discovery skips 01-01 (SUMMARY complete), finalizes 01-02, then Wave 2. Wave 2 (01-03 attribution, now carries D-09 signed-relevance) needs a GPU VM (this box has no CUDA).
 
 ## Performance Metrics
 

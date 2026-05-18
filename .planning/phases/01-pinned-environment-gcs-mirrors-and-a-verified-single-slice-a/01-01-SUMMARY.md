@@ -2,7 +2,7 @@
 phase: 01-pinned-environment-gcs-mirrors-and-a-verified-single-slice-a
 plan: 01
 subsystem: toolchain
-status: paused-at-checkpoint
+status: complete
 tags: [environment, pinning, dynamicLRP, vendoring, pytest, vit-repro]
 requires: []
 provides:
@@ -143,10 +143,25 @@ None. All created files are functional; no placeholder/empty-value stubs.
 - commit `36a68fe` — FOUND
 - commit `2d7a8fd` — FOUND
 
-## Next Step
+## Checkpoint Resolution (Task 3 — human-verify)
 
-Task 3 is a blocking `checkpoint:human-verify`. The human opens
-`notebooks/00_vit_repro.ipynb` (or `/tmp/00_vit_repro_executed.ipynb`) on the
-`mapclass (.venv)` kernel, Restart Kernel & Run All, and judges whether the ViT
-relevance heatmap is structured/non-uniform (matching the reference dynamicLRP
-qualitative look). Resume signal: `"approved"` or a description of what is wrong.
+**APPROVED by user — 2026-05-18.** The ViT dynamic-LRP relevance heatmap is
+structured/non-uniform and matches the reference dynamicLRP qualitative look.
+
+Post-checkpoint correction applied during verification (commit `a9763ed`):
+- The user flagged that the relevance scale appeared bounded at zero. Root
+  cause: cells 8–9 reduced over channels with `.abs()` and rendered `bwr`
+  without a zero-centered norm — sign-destroying. Fixed: signed channel sum,
+  `TwoSlopeNorm` zero-centered `bwr` (white==0), plus a separate `|relevance|`
+  magnitude panel; probe now reports whether negative relevance is present.
+- Honest finding: with the corrected signed reduction this reference ViT
+  (run with `use_gamma=True`, LRP-γ) yields **all-positive** relevance —
+  the one-sided look is a legitimate property of this config, not clipping.
+- Pinned env rebuilt to the spec'd **Python 3.10** (3.10.20; torch 2.7.1+cu126,
+  transformers 4.52.3 — zero-conflict resolve). The non-conforming 3.13 venv
+  was replaced. Re-executed clean (0 cell errors) on the 3.10 stack.
+- The signed + zero-centered requirement was propagated to Plan 01-03 as
+  decision **D-09** so `overlay.py` (the real deliverable) cannot reintroduce
+  the defect.
+
+Plan 01-01 is **complete**.

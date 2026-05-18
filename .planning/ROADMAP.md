@@ -35,8 +35,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Pinned environment + vendored dynamicLRP at the fixed SHA + reproduce reference ViT.ipynb heatmap (ENV-01)
-- [ ] 01-02-PLAN.md — Manifest reader + idempotent full 1,544 Rumsey + SigLIP-2 GCS mirrors + model/data loaders (DATA-01..04, MODEL-01)
+- [x] 01-01-PLAN.md — Pinned environment + vendored dynamicLRP at the fixed SHA + reproduce reference ViT.ipynb heatmap (ENV-01)
+- [x] 01-02-PLAN.md — Manifest reader + idempotent full 1,544 Rumsey + SigLIP-2 GCS mirrors + model/data loaders (DATA-01..04, MODEL-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -66,5 +66,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 0/3 | Not started | - |
+| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 2/3 | In Progress|  |
 | 2. Configurable Sweep, Run Caching, and Contact-Sheet Browse | 0/TBD | Not started | - |
