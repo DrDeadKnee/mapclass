@@ -127,3 +127,70 @@ None — the implementation is complete. `cmd_search` and `cmd_build` both write
 - `scripts/build_historical_dataset.py` modified: FOUND
 - Commit `2339afd` (RED): FOUND
 - Commit `e3fcf0c` (GREEN): FOUND
+
+## Post-Execution Findings (2026-05-18)
+
+The GCS-canonical pipeline (this plan) was offline/mock-verified above. This
+section records the first **real end-to-end execution** against live GCS +
+the David Rumsey LUNA API + Allmaps.
+
+### Finding F-1: Historical v1 dataset ceiling is 4 maps (scope, not bug)
+
+`build_historical_dataset.py full --max-maps 1555` over the *entire* Rumsey
+1500–1700 pool (1555 maps, ranked by metadata richness):
+
+| reason | count |
+|--------|-------|
+| `ok` (Allmaps-georeferenced → built) | **4** |
+| `out_of_scale` | 7 |
+| `not_in_allmaps` | 1544 |
+| `gcps_insufficient` / `download_failed` | 0 |
+
+≈0.26% of the regional-scale 16th–17th c. Rumsey corpus is registered in
+Allmaps. The pipeline only ingests maps Allmaps already has GCPs for;
+semi-automatic (PaliGemma cross-corr + TPS) and manual (MapWarper/QGIS)
+georeferencing are both **Deferred to v2** (STATE.md Deferred Items, Phase 2
+planning 2026-05-15). A larger historical set is therefore blocked on that
+deferred work — this is a designed scope constraint, not a defect.
+
+**Built:** `gs://mapclass-training-northeast1/data/historical/dataset/` — 4
+sample dirs, each with `_BUILD_COMPLETE`, ~62 pyramids:
+`RUMSEY_8_1_{275937_90049132,305328_90075898,369928_90137299,377140_90143281}__plate0`.
+
+**Downstream impact:** Phase 4 historical training signal is 4 maps. The
+class-conditional historical loss weights still apply, but the satellite
+family (199/199 built) is the viable v1 ground-truth source. EVAL-01 and any
+historical-reliant verification should treat the historical contribution as
+negligible for v1.
+
+**Open observation (parked, not yet investigated):** the `py_r000_c000`
+(top-left corner) tile of each of the 4 maps captures title pages /
+cartouches / a book binding rather than terrain — the georeferenced GeoTIFFs
+include non-map page regions that get labeled against WorldCover/DEM. Surfaced
+via `notebooks/inspect_datasets.ipynb`; quantification deferred.
+
+### Finding F-2: Four runtime defects fixed (commit `133ca84`)
+
+Real execution exposed defects the mock tests did not. Fixed in `133ca84`
+(branch `phase4`):
+
+1. `build_satellite_dataset.py cmd_coverage_scan` — `NamedTemporaryFile`
+   empty-file mistaken by `coverage.build_summary` for a cached summary →
+   `json.loads("")` crash. Fixed with `force=True`.
+2. `build_satellite_dataset.py cmd_search` — passed the `gs://` summary URI
+   into non-GCS-aware `pick_regions`/`build_summary` (`Path(uri).exists()`
+   always False) → silent full ~20k-tile global WorldCover rescan instead of
+   reusing the cached summary. Fixed by pulling the GCS object to a local
+   temp first.
+3. `build_historical_dataset.py cmd_build` — non-recursive
+   `georeferenced/*.tif` glob never matched the nested
+   `<id>__plate<i>/source.tif` download layout → "No GeoTIFFs found". Fixed
+   with `rglob`.
+4. `build_historical_dataset.py _process_one` — `sample_name = tif.stem` was
+   the constant `"source"` for every map → all maps collapsed into one
+   output dir; `_BUILD_COMPLETE` then skipped all but the first. Fixed to
+   derive the name from the unique per-plate parent dir.
+
+Satellite executed cleanly post-fix: coverage-scan (20233 cells) → search
+(199/200 scenes resolved, 1 cloud-dropped) → build (199/199). Both families'
+GCS layouts verified (sample dirs + `_BUILD_COMPLETE` sentinels).

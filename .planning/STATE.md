@@ -107,7 +107,18 @@ None yet.
 
 ### Blockers/Concerns
 
-None yet.
+- **Historical dataset is 4 samples (v1 ceiling).** Empirical execution
+  (2026-05-18) of `build_historical_dataset.py full --max-maps 1555` over the
+  *entire* David Rumsey 1500–1700 pool yielded `ok: 4`, `out_of_scale: 7`,
+  `not_in_allmaps: 1544` — ~0.26% Allmaps georeference coverage. The pipeline
+  only ingests maps Allmaps already has GCPs for; a meaningfully larger
+  historical set is blocked on the two **Deferred to v2** Georeferencing items
+  below (PaliGemma semi-automatic + manual MapWarper/QGIS). Not a bug —
+  scope-constrained by design. Downstream: Phase 4 historical training signal
+  is 4 maps; satellite (199 samples) is the viable v1 ground-truth source.
+  Built artifacts: `gs://mapclass-training-northeast1/data/historical/dataset/`
+  (4 dirs + sentinels). See `phases/02-.../02-03-SUMMARY.md` Post-Execution
+  Findings.
 
 ## Deferred Items
 
