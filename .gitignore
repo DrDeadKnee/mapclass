@@ -7,6 +7,9 @@
 # Local virtual environments (developer artifact; not committed)
 /.venv/
 
+# Local Rumsey image byte cache (config.LOCAL_IMAGE_CACHE_DIR; runtime artifact)
+/.cache/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
