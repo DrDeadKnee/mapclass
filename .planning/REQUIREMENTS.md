@@ -23,6 +23,7 @@ Requirements for the initial exploration pipeline. Each maps to a roadmap phase.
 - [ ] **MODEL-01**: Load SigLIP-2-so400m once from the GCS model mirror with model-aligned preprocessing (resize/normalize to 384, patchify) that records the resize transform for later overlay alignment
 - [ ] **ATTR-01**: Single forward + dynamic-LRP attribution for one (map, query) pair, attributing the image↔detached-text similarity scalar (`logits_per_image`), reducing image-token relevance to a per-patch grid
 - [ ] **ATTR-02**: Reconstruct patch relevance into a 2D heatmap with a fixed normalization, correctly handling SigLIP-2's 27×27 patch grid and the 384÷14 non-integer edge discard
+- [ ] **ATTR-03**: Three near-zero-cost sanity controls (query-swap, model-randomization, occlusion) implemented as a Phase 1 correctness gate — a (map, query) attribution is only trusted if an unrelated query changes the heatmap, randomized vision weights collapse it to noise, and occluding top-relevance patches drops image-text similarity more than occluding random patches
 
 ### Visualization
 
@@ -40,7 +41,6 @@ Acknowledged but deferred. Not in the current roadmap. Add only after the v1 loo
 
 ### Diagnostics
 
-- **DIAG-01**: Attribution sanity controls (query-swap, model-randomization, occlusion) as a diagnostic readout — *originally proposed as ATTR-03; descoped from v1 to keep evaluation strictly visual*
 - **DIAG-02**: Attribution sanity readout (top patches, score range) to detect silent adaptation failure
 - **PROV-01**: Per-run provenance metadata sidecar (map id, query, model/LRP config, timestamp) recorded with each cached artifact
 - **SWEEP-03**: Resumable / skip-if-cached sweep with `tqdm` progress
@@ -73,24 +73,25 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ENV-01 | TBD | Pending |
-| DATA-01 | TBD | Pending |
-| DATA-02 | TBD | Pending |
-| DATA-03 | TBD | Pending |
-| DATA-04 | TBD | Pending |
-| MODEL-01 | TBD | Pending |
-| ATTR-01 | TBD | Pending |
-| ATTR-02 | TBD | Pending |
-| VIZ-01 | TBD | Pending |
-| VIZ-02 | TBD | Pending |
-| SWEEP-01 | TBD | Pending |
-| SWEEP-02 | TBD | Pending |
+| ENV-01 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | Pending |
+| DATA-02 | Phase 1 | Pending |
+| DATA-03 | Phase 1 | Pending |
+| DATA-04 | Phase 1 | Pending |
+| MODEL-01 | Phase 1 | Pending |
+| ATTR-01 | Phase 1 | Pending |
+| ATTR-02 | Phase 1 | Pending |
+| ATTR-03 | Phase 1 | Pending |
+| VIZ-01 | Phase 1 | Pending |
+| VIZ-02 | Phase 2 | Pending |
+| SWEEP-01 | Phase 2 | Pending |
+| SWEEP-02 | Phase 2 | Pending |
 
 **Coverage:**
-- v1 requirements: 12 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 12 ⚠️
+- v1 requirements: 13 total
+- Mapped to phases: 13 (Phase 1: 10, Phase 2: 3)
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-18*
-*Last updated: 2026-05-18 after initial definition*
+*Last updated: 2026-05-18 after roadmap creation*
