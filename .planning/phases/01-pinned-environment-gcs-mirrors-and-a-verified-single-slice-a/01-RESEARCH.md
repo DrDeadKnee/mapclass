@@ -509,22 +509,27 @@ Concrete decision procedure (CLAUDE.md "Stack Patterns by Variant" + ARCHITECTUR
 | A5 | `LRPEngine.run(target)` accepts a 0-dim scalar tensor (`logits_per_image[0,0]`) | Code Examples | ViT passed `output.logits` (2-D). If `run` requires a 1-D/2-D tensor, wrap as `target.reshape(1)` or pass `logits_per_image[:1,:1]`. Resolve in the de-risk spike |
 | A6 | GCS ADC is present and valid on the VM | Pitfall F/G | PROJECT.md asserts it; verify fail-fast at job start. If absent, ingestion + all loaders block |
 
-## Open Questions
+## Empirical Risks (handled by plans — not planning blockers)
+
+These three items are answered only at execution time (they require running the pinned stack on the real model/GPU — research cannot resolve them). They are **not open planning questions**: each is already handled concretely by a specific plan/task, with an explicit fallback path. They are listed here for traceability, not as blockers.
 
 1. **Does `LRPEngine.run` accept a 0-dim scalar, or must the target be ≥1-D?**
    - Known: ViT.ipynb passes `output.logits` (2-D classification logits).
    - Unclear: whether `logits_per_image[0,0]` (0-dim) works directly.
-   - Recommendation: in the de-risk spike, first reproduce ViT.ipynb verbatim, then try `output.logits_per_image[0,0]`; if it errors on dimensionality, fall back to `output.logits_per_image[:1,:1]` or `.reshape(1)`. Cheap to resolve empirically.
+   - Empirical handling: in the de-risk spike, first reproduce ViT.ipynb verbatim, then try `output.logits_per_image[0,0]`; if it errors on dimensionality, fall back to `output.logits_per_image[:1,:1]` or `.reshape(1)`. Cheap to resolve empirically.
+   - **Resolved by:** Plan 01-03, Task 1 (`src/mapclass/attribution.py`) — the explicit 0-dim-vs-≥1-d target fallback path is implemented and unit-asserted (`tests/test_attribution_shape.py`); the de-risk spike in Plan 01-01, Task 2 first exercises the verbatim ViT 2-D path. Assumption A5.
 
 2. **At what node does `params_to_interpret=[img_tensor]` relevance get read — does it already bypass MAP-pool distortion?**
    - Known: relevance is resolved by tensor identity at the *input* (`img_tensor`), so it is the relevance that survived all the way back through the MAP head to the pixels.
    - Unclear: whether MAP-head relevance smearing still corrupts the *input-level* map (it can — distortion happens during backprop, not only at the embedding).
-   - Recommendation: the occlusion control is the arbiter; if it fails, apply Fallback Ladder step 3 (pre-pool logits / `use_attn_lrp`).
+   - Empirical handling: the occlusion control is the arbiter; if it fails, apply Fallback Ladder step 3 (pre-pool logits / `use_attn_lrp`).
+   - **Resolved by:** Plan 01-03, Task 2 (occlusion control in `notebooks/01_single_slice.ipynb`) is the faithfulness arbiter; Plan 01-03, Task 1 documents the Fallback Ladder in `attribution.py` as the response path; the blocking human-verify checkpoint (Plan 01-03, Task 3) refuses approval unless the occlusion control visually PASSes. Pitfall C / §Fallback Ladder.
 
 3. **Peak VRAM for so400m + LRP graph retention vs. the VM GPU.**
    - Known: paper shows multi-× growth on tiny models; so400m is ~400M params, 27 layers, 729 tokens.
    - Unclear: actual peak — unmeasurable without running.
-   - Recommendation: measure peak on the first single-image attribution (STATE.md Blocker); this is a Phase 1 deliverable that gates any Phase 2 sweep sizing.
+   - Empirical handling: measure peak on the first single-image attribution; this is a Phase 1 deliverable that gates any Phase 2 sweep sizing (STATE.md Blocker).
+   - **Resolved by:** Plan 01-03, Task 1 (`attribution.py` captures `torch.cuda.max_memory_allocated`) and Plan 01-03, Task 2 (the notebook prints and records peak VRAM for the single attribution; acceptance criterion gates Phase 2 sizing). Pitfall E / STATE.md Blocker.
 
 ## Environment Availability
 
@@ -620,3 +625,5 @@ Concrete decision procedure (CLAUDE.md "Stack Patterns by Variant" + ARCHITECTUR
 
 **Research date:** 2026-05-18
 **Valid until:** ~2026-06-17 for the stack (dynamicLRP is a fast-moving pre-publication repo — re-check the vendored SHA before any deliberate re-vendor; the SHA pin itself does not expire).
+</content>
+</invoke>
