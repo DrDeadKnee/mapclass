@@ -27,7 +27,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Given a manifest index, the loaders return SigLIP-2 from the GCS mirror plus the *same* `requires_grad_()` image tensor (correctly preprocessed via the official SigLIP-2 processor, [-1,1] rescale, 384 squash) and the original PIL image for overlay.
   4. For a single (map, query) pair, the attribution engine runs SigLIP-2 forward + dynamic LRP against the `logits_per_image[0,0]` image-text similarity scalar (detached text embedding) and returns a per-patch relevance grid reconstructed as a 2D heatmap correctly handling the 27×27 grid and 384÷14 6-px edge discard.
   5. A heatmap overlay for the chosen (map, query) renders inline in a JupyterLab cell, aligned to the source map, and has passed all three sanity controls: an unrelated query changes the heatmap substantially, randomized vision weights collapse it to noise, and occluding top-relevance patches drops image-text similarity more than occluding random patches.
-**Plans**: TBD (target 2-3)
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Pinned environment + vendored dynamicLRP at the fixed SHA + reproduce reference ViT.ipynb heatmap (ENV-01)
+- [ ] 01-02-PLAN.md — Manifest reader + idempotent full 1,544 Rumsey + SigLIP-2 GCS mirrors + model/data loaders (DATA-01..04, MODEL-01)
+- [ ] 01-03-PLAN.md — Single-slice SigLIP-2 + dynamic-LRP attribution + 27x27 overlay + three sanity controls notebook (ATTR-01..03, VIZ-01)
 **UI hint**: yes
 
 ### Phase 2: Configurable Sweep, Run Caching, and Contact-Sheet Browse
@@ -49,5 +53,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 0/TBD | Not started | - |
+| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 0/3 | Not started | - |
 | 2. Configurable Sweep, Run Caching, and Contact-Sheet Browse | 0/TBD | Not started | - |
