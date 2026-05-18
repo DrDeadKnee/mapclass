@@ -36,7 +36,13 @@ Progress: [████░░░░░░] 1/3 plans complete (01-01); 01-02 unv
 
 Remaining verification (run from repo root, pinned 3.10 `.venv`):
 - 01-02: `.venv/bin/python notebooks/scripts/run_mirror_model.py` (x2 → 2nd prints "converged"); `.venv/bin/python notebooks/scripts/run_ingest.py` (x2 → 1,544 coverage, 2nd all-skipped); `gcloud storage ls -l gs://mapclass-training-northeast1/data/ | head` (no 0-byte).
-On 01-02 verdict: re-run `/gsd-execute-phase 1` — discovery skips 01-01 (SUMMARY complete), finalizes 01-02, then Wave 2. Wave 2 (01-03 attribution, now carries D-09 signed-relevance) needs a GPU VM (this box has no CUDA).
+⚠ has_summary trap: `phase-plan-index` reports `incomplete: ['01-03']` because
+01-02's executor wrote a SUMMARY before pausing. 01-02 is NOT complete — its
+SUMMARY frontmatter is `status: paused-at-checkpoint` and the mirror has never
+been run. Do NOT auto-skip 01-02 on resume; verify it explicitly, then finalize
+it manually (set SUMMARY status: complete + roadmap.update-plan-progress) the
+same way 01-01 was. Only then is Wave 2 unblocked. Wave 2 (01-03 attribution,
+carries D-09 signed-relevance) additionally needs a GPU VM (this box has no CUDA).
 
 ## Performance Metrics
 
