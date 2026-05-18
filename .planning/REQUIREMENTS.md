@@ -1,90 +1,96 @@
-# Requirements
+# Requirements: MapClass
 
-**Project:** MapClass / GeoViLM
-**Milestone:** v1
-**Source of truth:** Extracted from `.planning/PROJECT.md` Active list. PROJECT.md remains canonical — if this file drifts, PROJECT.md wins.
+**Defined:** 2026-05-18
+**Core Value:** A working, repeatable loop — pick a map + a text query → get a dynamic-LRP attribution heatmap overlaid on that map → judge it visually — that scales to a configurable sweep of maps × queries browsable in a notebook.
 
 ## v1 Requirements
 
-### Data — DATA
+Requirements for the initial exploration pipeline. Each maps to a roadmap phase.
 
-- [ ] **DATA-05**: OSM road-tile dataset sub-pipeline as the third v1 source
-- [ ] **DATA-06**: Per-source class-conditional loss weights (topography fully trusted; water mostly trusted; trees/built-up/cropland heavily downweighted on historical maps; bare/sparse and snow/ice trusted)
+### Environment & Mirrors
 
-### Auto-georeferencing — GEOREF
+- [ ] **ENV-01**: Reproducible Python environment pinned to dynamicLRP's `requirements.txt` (torch==2.7.1, transformers==4.52.3), with keeinlev/dynamicLRP vendored at a pinned commit SHA (git clone + sys.path; no pip package exists)
+- [ ] **DATA-01**: Idempotently mirror Rumsey map images from the manifest `image_url`s into `gs://mapclass-training-northeast1/data/` (skip-if-exists, records failures, originals preserved)
+- [ ] **DATA-02**: Mirror SigLIP-2-so400m-patch14-384 weights from HuggingFace into `gs://mapclass-training-northeast1/models/`
 
-- [ ] **GEOREF-01**: Auto-georeferencing tool (cross-correlation against WorldCover + DEM reference grid → thin-plate-spline warping) — used as a training-data-prep tool, not an inference component
-- [ ] **GEOREF-02**: Bootstrap loop: train v0 on already-registered historical maps → use v0 to register currently-unregistered Rumsey maps → retrain v1 on the expanded dataset
+### Data Access
 
-### Model components — MODEL
+- [ ] **DATA-03**: Manifest access exposing an ordered index → entry resolution over the 1,544-entry manifest, supporting selection counting *down* from a high index N
+- [ ] **DATA-04**: Image loader that resolves a manifest `id` to its GCS-mirrored object and returns a usable image, with a local byte cache to avoid repeated GCS reads in a sweep
 
-- [ ] **MODEL-01**: Small VL backbone for the v1 ship target — the inference module's backbone (specific candidate selected in research phase; PaliGemma-3B is excluded as the *ship* backbone by inference budget)
-- [ ] **MODEL-02**: Rotationally-invariant OCR module for curved / rotated map text (CRAFT or ABCNet as candidate starting points; specific choice in research phase)
-- [ ] **MODEL-03**: Two lightweight dense segmentation heads on the backbone's vision features (one per output attribute: land cover, topography)
-- [ ] **MODEL-04**: PaliGemma-3B benchmark variant — same GeoViLM stack (OCR + seg heads + auto-georef bootstrap) with PaliGemma-3B swapped in as the backbone in place of MODEL-01. Trained as a bellwether upper bound to validate the small-backbone choice; not shipped as inference
+### Model & Attribution
 
-### Training — TRAIN
+- [ ] **MODEL-01**: Load SigLIP-2-so400m once from the GCS model mirror with model-aligned preprocessing (resize/normalize to 384, patchify) that records the resize transform for later overlay alignment
+- [ ] **ATTR-01**: Single forward + dynamic-LRP attribution for one (map, query) pair, attributing the image↔detached-text similarity scalar (`logits_per_image`), reducing image-token relevance to a per-patch grid
+- [ ] **ATTR-02**: Reconstruct patch relevance into a 2D heatmap with a fixed normalization, correctly handling SigLIP-2's 27×27 patch grid and the 384÷14 non-integer edge discard
 
-- [ ] **TRAIN-01**: End-to-end training of GeoViLM v0 with per-source loss weighting on the synthetic + already-registered-historical + OSM dataset, run for both backbones (MODEL-01 small VL + MODEL-04 PaliGemma)
-- [ ] **TRAIN-02**: End-to-end retraining of GeoViLM v1 on the bootstrap-expanded dataset, run for both backbones
+### Visualization
 
-### Evaluation — EVAL
+- [ ] **VIZ-01**: Heatmap overlaid on the source map (alpha-blended), displayed inline in a JupyterLab cell for a single (map, query) slice — **Phase 1 finish line**
+- [ ] **VIZ-02**: Contact-sheet browse of all sweep overlays inside the notebook (grid of maps × queries with labels) — **v1 finish line**
 
-- [ ] **EVAL-01**: Held-out joint per-pixel NLL `−(log p_land_cover + log p_topography)` on synthetic + historical test splits as the v1 ship metric (computed for the small-backbone variant; PaliGemma variant evaluated under EVAL-03)
-- [ ] **EVAL-02**: Qualitative spot-check renders on Tolkien Middle-Earth, Westeros, Abercrombie First-Law Circle of the World, and Warhammer Old World as ship demos (no ground truth, no metric); rendered for both backbones
-- [ ] **EVAL-03**: PaliGemma-vs-small-backbone NLL comparison on the same held-out splits — bellwether for the small-backbone choice. If the gap is too large to accept, the small-backbone candidate (MODEL-01) is reconsidered before ship
+### Sweep
 
-### Ship — SHIP
+- [ ] **SWEEP-01**: Configurable sweep over maps counting down from a high manifest index N (configurable start + count) crossed with a configurable query list, as pure orchestration over the ATTR/VIZ primitive
+- [ ] **SWEEP-02**: Run caching of relevance grids keyed by (map id, query) to disk/GCS so the notebook re-renders contact sheets without recompute
 
-- [ ] **SHIP-01**: Inference Python module + trained checkpoint of the small-backbone variant, packaged for the separate hex-grid app to consume; runs on single CPU or 4–8 GB consumer GPU. PaliGemma checkpoint is retained as a research/benchmark artifact, not packaged for the app
+## v2 Requirements
 
-## Already Validated (existing on `refactor_paper` branch)
+Acknowledged but deferred. Not in the current roadmap. Add only after the v1 loop is visually trusted.
 
-These are pre-existing in the codebase and treated as fixed for v1 — not phase deliverables. Listed here for completeness and traceability.
+### Diagnostics
 
-- ✓ **DATA-01**: Synthetic dataset pipeline (Azgaar Fantasy Map Generator + custom Pillow renderer with multi-style outputs) — `scripts/build_dataset.py`, `scripts/render.py`, `scripts/label.py`, `scripts/biome_mapping.py`, `scripts/augment.py`
-- ✓ **DATA-02**: Historical dataset pipeline (David Rumsey LUNA API + ESA WorldCover S3 + Copernicus DEM S3) — `scripts/build_historical_dataset.py`, `scripts/historical/{rumsey,worldcover,dem,label}.py`
-- ✓ **DATA-03**: Canonical 9-class land-cover taxonomy mapped from ESA WorldCover; Mangroves→Trees and Moss/Lichen→Bare-sparse fold
-- ✓ **DATA-04**: 3-class topography taxonomy (flat <2°, hilly 2–15°, mountainous >15°) from Copernicus DEM GLO-30 slope
+- **DIAG-01**: Attribution sanity controls (query-swap, model-randomization, occlusion) as a diagnostic readout — *originally proposed as ATTR-03; descoped from v1 to keep evaluation strictly visual*
+- **DIAG-02**: Attribution sanity readout (top patches, score range) to detect silent adaptation failure
+- **PROV-01**: Per-run provenance metadata sidecar (map id, query, model/LRP config, timestamp) recorded with each cached artifact
+- **SWEEP-03**: Resumable / skip-if-cached sweep with `tqdm` progress
 
-## Out of Scope (v1)
+### Interaction
 
-Anchored in PROJECT.md "Out of Scope (v1)". Listed verbatim here so the roadmapper does not re-promote these during phase decomposition.
+- **VIZ-03**: Side-by-side per-map query comparison view
+- **VIZ-04**: Overlay tuning params surfaced (alpha, colormap, signed vs abs, percentile clip)
+- **VIZ-05**: ipywidgets interactive query/map selector
 
-- **PaliGemma-3B as the v1 ship / inference backbone** — 6 GB FP16 weights break the inference budget. PaliGemma *training* is in scope as a v1 benchmark/bellwether (MODEL-04, EVAL-03); only its use as the packaged inference backbone is excluded.
-- **Auto-georef as an inference / app feature** — fantasy maps lack real-world coordinates; auto-georef is a training-data-prep tool only.
-- **Hex-grid aggregation, polygon tracing, region delineation** — owned by the separate hex-grid app downstream.
-- **EU4 / CK3 / HoI4 engine-specific output formats** — output is generic per-pixel class probabilities.
-- **Hand-annotated fantasy test set** — qualitative spot-checks only at v1.
-- **Zero-shot CLIP / SigLIP / OpenCLIP / PaliGemma baselines** — milestone 2.
-- **Dynamic-LRP mechanistic failure analysis** — milestone 2.
-- **Component ablations** (backbone-only vs +OCR vs +seg-heads vs full system) — milestone 2.
-- **Paper draft / write-up** — milestone 2.
-- **Redistribution of the combined training dataset** — license risk; v1 ships weights + code only.
-- **Hand-annotation tooling integration** (Label Studio / CVAT) — only relevant if a real-domain annotated test set is added later.
-- **Cloud / docker / VM provisioning** — handled by a separate VM-provisioning repo.
-- **Tests, CI, linting / formatting tooling** — single-author research codebase, accepted risk for v1.
+## Out of Scope
+
+Explicitly excluded. Documented to prevent scope creep.
+
+| Feature | Reason |
+|---------|--------|
+| Quantitative attribution metrics (faithfulness/ABPC, pixel-flipping, IoU) | v1 judgment is purely visual; metrics need ground-truth masks that don't exist yet |
+| Model swapping as a first-class axis (Florence-2, PaliGemma, ViT…) | Model fixed to SigLIP-2 in v1; each model is its own LRP-adaptation risk |
+| LRP method/parameter tuning as a first-class axis | LRP config fixed in v1; vary map + query only; tuning explodes the sweep space |
+| Open-source labeller integration (CVAT/Label Studio) | README "phase 2"; depends on a trusted exploration loop existing first |
+| Polished mask/dataset export (binary masks, COCO/PNG) | Downstream milestone; label spec not yet known; keep raw `.npy` for now |
+| Fine-tuning / any model training | The abandoned prior approach this restart deliberately replaces |
+| Other dataset categories (Toons, Fantasy, MapMaker, Satellite) | Rumsey historical only for v1; others add loader variance with no loop payoff |
+| Web app / dashboard / served UI | Contradicts remote-VM + JupyterLab-over-SSH constraint; zero research payoff |
+| Multi-GPU / distributed sweep | Premature optimization; single GPU VM is the stated runtime |
 
 ## Traceability
 
-Filled in by the roadmapper after `ROADMAP.md` is generated.
+Which phases cover which requirements. Populated during roadmap creation.
 
-| REQ-ID | Phase |
-|--------|-------|
-| DATA-05 | Phase 3 |
-| DATA-06 | Phase 2 |
-| GEOREF-01 | Phase 4 |
-| GEOREF-02 | Phase 4 |
-| MODEL-01 | Phase 2 |
-| MODEL-02 | Phase 3 |
-| MODEL-03 | Phase 1 |
-| MODEL-04 | Phase 5 |
-| TRAIN-01 | Phase 3 |
-| TRAIN-02 | Phase 4 |
-| EVAL-01 | Phase 4 |
-| EVAL-02 | Phase 6 |
-| EVAL-03 | Phase 5 |
-| SHIP-01 | Phase 6 |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| ENV-01 | TBD | Pending |
+| DATA-01 | TBD | Pending |
+| DATA-02 | TBD | Pending |
+| DATA-03 | TBD | Pending |
+| DATA-04 | TBD | Pending |
+| MODEL-01 | TBD | Pending |
+| ATTR-01 | TBD | Pending |
+| ATTR-02 | TBD | Pending |
+| VIZ-01 | TBD | Pending |
+| VIZ-02 | TBD | Pending |
+| SWEEP-01 | TBD | Pending |
+| SWEEP-02 | TBD | Pending |
+
+**Coverage:**
+- v1 requirements: 12 total
+- Mapped to phases: 0 (pending roadmap)
+- Unmapped: 12 ⚠️
 
 ---
-*Generated: 2026-05-08 from PROJECT.md Active list. Update this file only if PROJECT.md changes; keep in sync.*
+*Requirements defined: 2026-05-18*
+*Last updated: 2026-05-18 after initial definition*
