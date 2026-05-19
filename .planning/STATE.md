@@ -25,24 +25,24 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — PAUSED (01-02 human-verify outstanding)
-Plan: 01-01 COMPLETE (human-verify approved 2026-05-18). 01-02 paused at Task 3 checkpoint:human-verify (mirror not yet run). Wave 2 (01-03) blocked on 01-02 + a GPU VM.
-Status: 01-01 finalized; awaiting user verification of 01-02 (full 1,544 GCS mirror + idempotency)
-Last activity: 2026-05-18 -- 01-01 approved + signed-relevance viz fix (a9763ed); pinned 3.10 venv rebuilt; D-09 added to 01-03
+Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — PAUSED (Wave 2 needs GPU VM)
+Plan: Wave 1 COMPLETE — 01-01 (approved 2026-05-18) + 01-02 (approved 2026-05-19, orchestrator-driven mirror gate). 01-03 (Wave 2) is the only remaining plan; blocked: requires a GPU VM (this box has no CUDA).
+Status: 2/3 plans complete; Wave 2 (01-03 single-slice SigLIP-2 attribution) not started — needs CUDA
+Last activity: 2026-05-19 -- 01-02 mirror gate verified (1,544/1,544 GCS objects, idempotent) and finalized
 
-Progress: [████░░░░░░] 1/3 plans complete (01-01); 01-02 unverified; 01-03 blocked
+Progress: [███████░░░] 2/3 plans complete (01-01, 01-02); 01-03 blocked on GPU
 
 ### Resume
 
-Remaining verification (run from repo root, pinned 3.10 `.venv`):
-- 01-02: `.venv/bin/python notebooks/scripts/run_mirror_model.py` (x2 → 2nd prints "converged"); `.venv/bin/python notebooks/scripts/run_ingest.py` (x2 → 1,544 coverage, 2nd all-skipped); `gcloud storage ls -l gs://mapclass-training-northeast1/data/ | head` (no 0-byte).
-⚠ has_summary trap: `phase-plan-index` reports `incomplete: ['01-03']` because
-01-02's executor wrote a SUMMARY before pausing. 01-02 is NOT complete — its
-SUMMARY frontmatter is `status: paused-at-checkpoint` and the mirror has never
-been run. Do NOT auto-skip 01-02 on resume; verify it explicitly, then finalize
-it manually (set SUMMARY status: complete + roadmap.update-plan-progress) the
-same way 01-01 was. Only then is Wave 2 unblocked. Wave 2 (01-03 attribution,
-carries D-09 signed-relevance) additionally needs a GPU VM (this box has no CUDA).
+Wave 2 — `/gsd-execute-phase 1` ON A GPU VM (CUDA required; CLAUDE.md: so400m LRP on CPU is impractical):
+- Discovery: 01-01 & 01-02 SUMMARYs are `status: complete` → only 01-03 runs.
+- 01-03 carries decision **D-09**: `overlay.py` must use signed (no `.abs()`)
+  + zero-centered diverging norm (no min-max `[0,1]`) — see 01-03-PLAN.md.
+- Prereqs already satisfied on GCS: 1,544 image mirror + 19-file SigLIP-2
+  weights mirror complete & idempotent; pinned 3.10 venv build recipe at
+  `/tmp/build_py310_venv.sh` (host lacks 3.10 → conda-forge interpreter only).
+- After 01-03 verified: phase verification + completion (Phase 1 = DONE only
+  when all three 01-03 sanity controls visually PASS, D-02/D-03).
 
 ## Performance Metrics
 

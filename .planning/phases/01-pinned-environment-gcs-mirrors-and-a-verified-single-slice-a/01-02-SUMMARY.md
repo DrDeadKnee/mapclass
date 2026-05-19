@@ -3,7 +3,7 @@ phase: 01-pinned-environment-gcs-mirrors-and-a-verified-single-slice-a
 plan: 02
 subsystem: persistence-and-data-access
 tags: [gcs-mirror, manifest, siglip2, data-loader, idempotent-ingest]
-status: paused-at-checkpoint
+status: complete
 requires:
   - "src/mapclass/config.py (Plan 01-01 — GCS_BUCKET / prefixes / MODEL_REPO_ID / DEVICE / MANIFEST_PATH)"
   - "pinned venv (Plan 01-01 — torch==2.7.1, transformers==4.52.3, google-cloud-storage, huggingface_hub, PIL, pytest)"
@@ -178,3 +178,27 @@ orchestrator's post-merge suite and Task 3 exercise the live paths.)
 ## Self-Check: PASSED
 
 All 12 created files exist on disk; both task commits (f981080, fbc973f) are present in git history.
+
+## Checkpoint Resolution (Task 3 — human-verify)
+
+**APPROVED by user — 2026-05-19.** Orchestrator drove the full gate on the
+VM (ADC project `narrative-strategy-campaign`, pinned 3.10 venv):
+
+- Model mirror ×2 → `0 uploaded, 19 skipped` + "converged" (exit 0).
+- Image ingest ×2 → `skipped 1544`, `TOTAL ids covered 1544/1544` (exit 0).
+- Independent GCS check: exactly **1,544** non-zero `.jpg` objects under
+  `data/` (400–700 KB each, 0 zero-byte), 19 model files, outcome manifest
+  covers all 1,544 ids.
+
+Gate satisfied: **complete** (100% coverage — 1,544/1,544 real objects),
+**idempotent** (two full re-runs of both scripts converge, zero new writes),
+**no corruption** (no zero-byte objects).
+
+Caveat (recorded for honesty): the images were uploaded ~21:28–21:29Z by the
+original 01-02 executor's worktree run, before this verification. The driver
+verified end-state + idempotent convergence, not a fresh cold ingest; the
+idempotent re-run overwrote `_ingest_outcome.json` with all-`skipped`, so the
+original `ok`/`dead-url` fetch distribution is no longer in the manifest. 100%
+non-zero coverage evidences the original cold ingest succeeded for every id.
+
+Plan 01-02 is **complete**. Wave 1 (01-01 + 01-02) is fully verified.
