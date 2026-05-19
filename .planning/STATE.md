@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-19)
 Phase: 1 of 1 (Multi-Model × Multi-Map Attribution Notebook)
 Plan: — (not yet planned)
 Status: Ready to plan
-Last activity: 2026-05-19 — roadmap simplified to a single lean phase per user ("getting over complicated — just want a notebook that runs multiple models against multiple maps")
+Last activity: 2026-05-19 - Completed quick task 260519-2v4: multi-model × last-50-maps dynamic-LRP notebook (ViT works 19/50; SigLIP-2/CLIP/PaliGemma recorded no-coverage/OOM)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -90,6 +90,13 @@ None yet.
 - [v1.1 — risk, expected] PaliGemma (~3B, ~7.5× the so400m ceiling) likely OOMs the L4; this is an expected, recordable result, not a bug to engineer around (Phase 4 / Phase 5 captioned "no heatmap" tile).
 - [v1.1 — scope guard] No sweep, no per-model coverage-gap fixing / vendor patching, no pin bumps. `VENDOR_SHA==405e74243ecaa1f615f418fdc8ba24c3c5889b1e` must stay intact (ADPT-04 pre-flight enforces this).
 - [Carried, v1.0] SigLIP-2 single-forward peak VRAM = 4.326 GB (forward-only lower bound; the dynamicLRP relevance-pass peak is unmeasured because the SigLIP-2 relevance pass never completes). Relevant to Phase 5 sequential load/free OOM budgeting.
+- [v1.1 — RESULT, quick-260519-2v4] Cross-model dynamic-LRP coverage measured on last-50 Rumsey maps: **ViT-b-16 works (19/50 heatmaps, peak 19.3 GB)** — the positive control. **SigLIP-2 0/50** (`split_with_sizes` gap, known). **CLIP 0/50 — NEW finding**: genuine dynamicLRP op-coverage gap on CLIP engine internals (`Expand should not increase number of dimensions`), inputs/forward verified correct. **PaliGemma-3B 0/50**: OOM at load on the 24 GB L4 (expected). Recorded results, not bugs — Fallback Ladder stays declined.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260519-2v4 | Multi-model (SigLIP-2/CLIP/ViT-b-16/PaliGemma-3B) × last-50 Rumsey maps dynamic-LRP notebook (headless exit 0) | 2026-05-19 | 14fd238 | [260519-2v4-build-one-notebook-that-runs-dynamic-lrp](./quick/260519-2v4-build-one-notebook-that-runs-dynamic-lrp/) |
 
 ## Deferred Items
 
