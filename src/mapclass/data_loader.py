@@ -63,15 +63,27 @@ def load_slice(
 
         _model, processor = get_model_and_processor()
 
-    # Assumption A2: SigLIP tokenizer model_max_length must be 64.
+    # Assumption A2: SigLIP text encoding REQUIRES padding="max_length",
+    # max_length=64 — which is passed explicitly to the processor below, so
+    # encoding is correct regardless of the tokenizer's reported
+    # model_max_length. The real loaded SigLIP-2 processor reports the
+    # transformers "no limit" sentinel (a VERY_LARGE_INT), NOT 64; the older
+    # exact-equality assertion (Plan 01-02) wrongly hard-failed on that
+    # sentinel. Only fail if the tokenizer advertises a concrete SMALLER
+    # window than 64, which would silently truncate the query (Plan 01-03
+    # Rule 1 bug fix).
+    _HF_NO_LIMIT_SENTINEL = int(1e30)  # transformers' "unset" model_max_length
     tok = getattr(processor, "tokenizer", None)
-    if tok is not None and getattr(tok, "model_max_length", None) not in (
-        None,
-        SIGLIP_MAX_LENGTH,
+    _mml = getattr(tok, "model_max_length", None) if tok is not None else None
+    if (
+        _mml is not None
+        and _mml < SIGLIP_MAX_LENGTH
+        and _mml < _HF_NO_LIMIT_SENTINEL
     ):
         raise AssertionError(
-            "Expected SigLIP tokenizer model_max_length == "
-            f"{SIGLIP_MAX_LENGTH}, got {tok.model_max_length} (Assumption A2)."
+            "SigLIP tokenizer model_max_length "
+            f"({_mml}) is smaller than the required {SIGLIP_MAX_LENGTH} — "
+            "the query would be silently truncated (Assumption A2)."
         )
 
     local_path = _cached_image_path(entry["id"])
@@ -87,4 +99,9 @@ def load_slice(
 
     # SAME object flows downstream — no clone/detach/re-.to() after this line.
     img_tensor = inputs["pixel_values"].requires_grad_()
-    return img_tensor, inputs["input_ids"], inputs["attention_mask"], pil
+    # The fixed-resolution SigLIP-2 processor pads text to a fixed
+    # max_length and does NOT emit an attention_mask (the SigLIP text model
+    # forward accepts attention_mask=None). Return None rather than
+    # KeyError-ing when it is absent (Plan 01-03 Rule 1 bug fix).
+    attention_mask = inputs.get("attention_mask", None)
+    return img_tensor, inputs["input_ids"], attention_mask, pil

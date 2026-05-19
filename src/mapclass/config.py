@@ -36,7 +36,10 @@ MODEL_REPO_ID = "google/siglip2-so400m-patch14-384"
 MODEL_GCS_DIR = "models/siglip2-so400m-patch14-384"
 
 # --- Manifest --------------------------------------------------------------
-MANIFEST_PATH = "metadata/rumsey_manifest.json"
+# Anchored to REPO_ROOT (absolute) so it resolves regardless of the process
+# cwd — e.g. nbconvert runs notebooks with cwd=notebooks/, not the repo root
+# (Plan 01-03 Rule 3 fix). load_manifest() from repo-root cwd is unaffected.
+MANIFEST_PATH = str(REPO_ROOT / "metadata" / "rumsey_manifest.json")
 
 # --- Local caches (gitignored), env-overridable ----------------------------
 LOCAL_IMAGE_CACHE_DIR = os.environ.get(
