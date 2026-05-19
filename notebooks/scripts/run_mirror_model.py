@@ -23,11 +23,16 @@ _SRC = os.path.join(_REPO_ROOT, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from mapclass import config  # noqa: E402
 from mapclass.mirror_model import mirror_model  # noqa: E402
 
 
 def main() -> int:
-    summary = mirror_model()
+    # mirror_model is generalized to (repo_id, gcs_dir, ...) in v1.1; this
+    # SigLIP-2 runner pins the v1.0 repo/dir via config (non-gated, token=None).
+    summary = mirror_model(
+        config.MODEL_REPO_ID, config.MODEL_GCS_DIR, token=None
+    )
     uploaded = sum(1 for v in summary.values() if v == "uploaded")
     skipped = sum(1 for v in summary.values() if v == "skipped")
     print(
