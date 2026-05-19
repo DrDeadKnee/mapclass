@@ -87,6 +87,21 @@ SHA, T-01-SC3) OR step 5 (captum Integrated Gradients degraded baseline).
 This is an architectural decision surfaced at the Plan 01-03 human-verify
 checkpoint (the plan designates the Fallback Ladder as the FAIL response
 path); it is NOT auto-selected by the executor.
+
+USER RESOLUTION (01-03 human-verify checkpoint, 2026-05-19) — Fallback Ladder
+DECLINED, do NOT re-attempt. The user reviewed this finding and the
+end-to-end smoke test and explicitly declined the ENTIRE Fallback Ladder: NO
+custom dynamicLRP Promise (step 2), NO pre-pool / ``use_attn_lrp``
+engineering (step 3), NO vendored LXT, and NO captum Integrated Gradients
+baseline (step 5). Quote: "Smoke-test was good, it didn't crash. Let's leave
+well enough alone and move on." The project is reframed as a multi-model
+comparison of dynamic-LRP; SigLIP-2's ``split_with_sizes`` op-coverage gap is
+an ACCEPTED per-model FINDING and the Phase 1 D-02/D-03 visual-eyeball gate is
+CONSCIOUSLY WAIVED for SigLIP-2. The Fallback Ladder above is retained ONLY as
+historical documentation of the escalation route that was offered and
+declined — it MUST NOT be implemented later for SigLIP-2 without an explicit
+new user decision. ``third_party/dynamicLRP`` is unmodified (VENDOR_SHA
+intact; no T-01-SC3 deviation taken).
 """
 
 from __future__ import annotations

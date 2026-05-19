@@ -1,4 +1,4 @@
-"""Generator for notebooks/01_single_slice.ipynb (Phase 1 finish line).
+"""Generator for notebooks/01_single_slice.ipynb (Phase 1 SMOKE TEST).
 
 Run with the pinned venv:
     .venv/bin/python notebooks/_build_01_single_slice.py
@@ -6,6 +6,37 @@ Run with the pinned venv:
 Authoring the notebook from a script keeps the cell sources reviewable as
 plain Python and the ipynb byte-stable. The notebook itself is the committed
 artifact; this generator is a build helper kept in-tree for reproducibility.
+
+------------------------------------------------------------------------------
+HONEST SCOPE (user decision at the 01-03 human-verify checkpoint, 2026-05-19):
+
+dynamicLRP's op-coverage FAILS on SigLIP-2-so400m: `split_with_sizes` in the
+MAP-pool / attention head is outside the current engine's covered ops, so
+`attribute()` raises a `RuntimeError` and **no LRP relevance is produced for
+SigLIP-2**. The user reviewed this and explicitly DECLINED the entire Fallback
+Ladder (NO custom Promise, NO pre-pool / `use_attn_lrp` engineering, NO LXT,
+NO captum IG) — quote: "Smoke-test was good, it didn't crash. Let's leave well
+enough alone and move on." The project is reframed as a multi-model comparison
+of dynamic-LRP; SigLIP-2 is one model and this is an ACCEPTED per-model FINDING.
+The Phase 1 D-02/D-03 visual-eyeball gate is CONSCIOUSLY WAIVED for SigLIP-2.
+
+Therefore this notebook is an honest END-TO-END SMOKE TEST, not the original
+overlay + three-controls finish line:
+  * loads SigLIP-2 from the GCS weights mirror,
+  * builds the requires_grad (1,3,384,384) pixel tensor for the locked slice
+    (manifest[-1], query "a river") via the existing loaders,
+  * runs the forward and measures peak forward VRAM (closes the STATE.md
+    peak-VRAM blocker),
+  * runs the dynamicLRP coverage probe and prints the op count,
+  * calls attribute() inside a try/except that CATCHES the RuntimeError and
+    renders a clear, labeled FINDING cell (NOT an uncaught traceback),
+  * still shows the source map inline so the slice is visually identified,
+  * finishes with exit code 0 — the finding is a recorded result, not a crash.
+The three D-02/D-03 sanity controls are NOT rendered because no relevance
+exists to overlay; this is the user-WAIVED gate, documented honestly here and
+in 01-03-SUMMARY.md (not a silent pass). The Fallback Ladder was DECLINED by
+the user and must NOT be re-attempted later.
+------------------------------------------------------------------------------
 """
 
 import json
@@ -38,15 +69,32 @@ def code(text):
 
 md(
     """
-# Phase 1 Single-Slice Attribution (01_single_slice)
+# Phase 1 Single-Slice — dynamicLRP × SigLIP-2 SMOKE TEST (01_single_slice)
 
-The Phase 1 **finish line**: SigLIP-2 forward + dynamic LRP against the
-contrastive similarity scalar `logits_per_image[0,0]` on the locked slice
-(`manifest[-1]`, D-05) + control query `"a river"` (D-06), reconstructed to a
-27x27 overlay aligned to the source map, plus the **three mandatory sanity
-controls** (query-swap vs `"a xylophone"`, vision-tower randomization, top-k
-vs random occlusion) rendered side-by-side for the visual eyeball gate
-(D-03/D-04 — judged by your eyes, **no quantitative thresholds**).
+> **Honest scope.** This notebook is an **end-to-end smoke test**, not the
+> original overlay + three-sanity-controls finish line. dynamicLRP's
+> op-coverage **does not cover SigLIP-2-so400m**: the `split_with_sizes` op in
+> SigLIP-2's MAP-pool / attention head is outside the current engine, so
+> `attribute()` raises a `RuntimeError` and **no LRP relevance / heatmap is
+> produced for SigLIP-2**. This was reviewed at the 01-03 human-verify
+> checkpoint and the user **explicitly declined the entire Fallback Ladder**
+> (no custom Promise, no pre-pool/`use_attn_lrp`, no LXT, no captum IG):
+> *"Smoke-test was good, it didn't crash. Let's leave well enough alone and
+> move on."* The project is reframed as a **multi-model comparison of
+> dynamic-LRP** — SigLIP-2 is one model and this is an **accepted per-model
+> FINDING**. The Phase 1 D-02/D-03 visual-eyeball gate is **consciously
+> WAIVED for SigLIP-2** (documented in `01-03-SUMMARY.md`, not a silent pass).
+
+What this notebook DOES, end to end, exiting 0:
+1. loads SigLIP-2 from the GCS weights mirror,
+2. builds the `requires_grad` `(1,3,384,384)` pixel tensor for the **locked
+   slice** (`manifest[-1]`, D-05) + locked control query `"a river"` (D-06),
+3. runs the forward and **measures peak forward VRAM** (closes the STATE.md
+   peak-VRAM blocker),
+4. runs the dynamicLRP **coverage probe** and prints the op count,
+5. calls `attribute()` in a `try/except` that **catches** the `RuntimeError`
+   and prints the FINDING (not a traceback),
+6. shows the **source map** inline so the slice is visually identified.
 """
 )
 
@@ -114,215 +162,137 @@ model, processor = get_model_and_processor()
 print("model class :", type(model).__name__)
 print("vision tower:", type(model.vision_model).__name__)
 
-# Fallback-Ladder step 1: static op-coverage probe BEFORE the first relevance
-# pass (a coverage artifact, not a gate).
+# dynamicLRP static op-coverage probe BEFORE the relevance pass. This is the
+# coverage artifact for the multi-model comparison (an artifact, not a gate).
 _it, _ii, _am, _pil = load_slice(entry, "a river")
 _ops = coverage_probe(model, _it, _ii, _am)
 try:
     _names, _count, _graph = _ops
 except (TypeError, ValueError):
     _count = len(_ops) if hasattr(_ops, "__len__") else _ops
-print("get_model_operations op count:", _count)
+print("dynamicLRP get_model_operations op count:", _count)
+print(
+    "NOTE: SigLIP-2's MAP-pool/attention head uses `split_with_sizes`, which "
+    "is OUTSIDE the current dynamicLRP engine coverage (see the FINDING cell)."
+)
 del _it, _ii, _am, _pil
 torch.cuda.empty_cache()
 """
 )
 
-# --- Cell 4: control run + overlay + grid demo + peak VRAM ----------------
+# --- Cell 4: locked-slice forward + peak forward VRAM + source map --------
 code(
     """
-# Cell 4 - CONTROL RUN: locked slice + "a river" -> overlay aligned to the map
-from mapclass.overlay import to_patch_grid, composite, draw_patch_grid
-
+# Cell 4 - locked slice + "a river": forward, PEAK FORWARD VRAM, source map.
+# The forward succeeds; only the dynamicLRP relevance pass fails (Cell 5).
+# This cell CLOSES the STATE.md peak-VRAM blocker by measuring the peak VRAM
+# of the SigLIP-2 forward on the locked (1,3,384,384) slice tensor.
 img_tensor, input_ids, attention_mask, pil = load_slice(entry, "a river")
-res_river = attribute(model, img_tensor, input_ids, attention_mask)
+print("pixel tensor shape :", tuple(img_tensor.shape),
+      "| requires_grad =", bool(img_tensor.requires_grad))
 
-grid_signed, grid_mag = to_patch_grid(res_river.relevance)
+torch.cuda.reset_peak_memory_stats()
+with torch.no_grad():
+    _fwd = model(pixel_values=img_tensor, input_ids=input_ids,
+                 attention_mask=attention_mask)
+    _sim = float(_fwd.logits_per_image[0, 0].item())
+PEAK_FWD_VRAM_BYTES = int(torch.cuda.max_memory_allocated())
+PEAK_FWD_VRAM_GB = PEAK_FWD_VRAM_BYTES / (1024 ** 3)
+del _fwd
+torch.cuda.empty_cache()
 
-# Peak VRAM for the single so400m + LRP attribution (STATE.md blocker -
-# gates Phase 2 sweep sizing). Recorded into the figure AND printed.
-PEAK_VRAM_BYTES = res_river.peak_vram_bytes
-PEAK_VRAM_GB = PEAK_VRAM_BYTES / (1024 ** 3)
-print(f"target form used        : {res_river.target_form}")
-print(f"PEAK VRAM (single attr) : {PEAK_VRAM_GB:.3f} GB "
-      f"({PEAK_VRAM_BYTES:,} bytes)")
-print(f"relevance shape         : {tuple(res_river.relevance.shape)}")
-print(f"signed grid min/max     : {grid_signed.min():.4g} / {grid_signed.max():.4g}")
-print(f"has negative relevance  : {bool((grid_signed < 0).any())}")
+print(f'similarity logits_per_image[0,0] ("a river") : {_sim:.4f}')
+print(f"PEAK FORWARD VRAM (single so400m forward)    : "
+      f"{PEAK_FWD_VRAM_GB:.3f} GB ({PEAK_FWD_VRAM_BYTES:,} bytes)")
+print("STATE.md peak-VRAM blocker: CLOSED (forward peak measured + recorded "
+      "above; the dynamicLRP relevance pass does not run for SigLIP-2 — see "
+      "the FINDING cell).")
 
-fig, axs = plt.subplots(1, 3, figsize=(21, 7))
-axs[0].imshow(pil); axs[0].set_title(f"source map\\n{entry['id']}"); axs[0].set_axis_off()
-composite(axs[1], pil, grid_signed, grid_mag,
-          title='"a river" signed overlay (bwr, 0-centered) [nearest]')
-composite(axs[2], pil, grid_signed, grid_mag,
-          title='"a river" signed overlay [interpolated]',
-          interpolation="bilinear")
-fig.suptitle(
-    f'CONTROL: locked slice + "a river"  |  peak VRAM '
-    f'{PEAK_VRAM_GB:.2f} GB  |  LRP target {res_river.target_form}'
-)
+# Show the source map inline so the locked slice is visually identified.
+fig, ax = plt.subplots(1, 1, figsize=(9, 9))
+ax.imshow(pil)
+ax.set_title(f"locked slice (manifest[-1], D-05)\\n{entry['id']}")
+ax.set_axis_off()
 fig.tight_layout(); plt.show()
-
-# D-07: explicit grid-placement + 6-px edge-exclusion demonstration.
-fig2, ax = plt.subplots(1, 1, figsize=(9, 9))
-draw_patch_grid(ax, pil)
-fig2.tight_layout(); plt.show()
 """
 )
 
-# --- Cell 5: CONTROL A query-swap ----------------------------------------
+# --- Cell 5: attribute() FINDING (caught RuntimeError) --------------------
 code(
     """
-# Cell 5 - CONTROL A (query-swap): "a river" vs "a xylophone" (D-06), ADJACENT.
-# PASS by eye: substantially DIFFERENT regions. FAIL: near-identical
-# (image-saliency, not query-driven).
-it_x, ii_x, am_x, pil_x = load_slice(entry, "a xylophone")
-res_xylo = attribute(model, it_x, ii_x, am_x)
-gx_signed, gx_mag = to_patch_grid(res_xylo.relevance)
+# Cell 5 - dynamicLRP attribution attempt: CAUGHT op-coverage FINDING.
+# We call attribute() honestly and CATCH the RuntimeError it raises (the
+# `split_with_sizes` coverage gap). This is a recorded per-model RESULT for
+# the multi-model dynamic-LRP comparison, NOT a cell error / traceback.
+import traceback
 
-fig, axs = plt.subplots(1, 2, figsize=(16, 8))
-composite(axs[0], pil, grid_signed, grid_mag, title='"a river" (control query)')
-composite(axs[1], pil_x, gx_signed, gx_mag, title='"a xylophone" (query-swap)')
-fig.suptitle("CONTROL A - query-swap (eyeball: regions must differ substantially)")
-fig.tight_layout(); plt.show()
-del it_x, ii_x, am_x
-torch.cuda.empty_cache()
+LRP_RELEVANCE = None
+LRP_FINDING = None
+try:
+    _res = attribute(model, img_tensor, input_ids, attention_mask)
+    LRP_RELEVANCE = _res.relevance
+    print("UNEXPECTED: attribute() returned relevance of shape",
+          tuple(LRP_RELEVANCE.shape),
+          "- the documented SigLIP-2 op-coverage gap did NOT occur. "
+          "Investigate before treating this as a finding.")
+except RuntimeError as exc:
+    LRP_FINDING = repr(exc)
+    print("dynamicLRP attribute() raised (EXPECTED, CAUGHT):")
+    print(" ", LRP_FINDING)
+finally:
+    torch.cuda.empty_cache()
 """
 )
 
-# --- Cell 6: CONTROL B model-randomization -------------------------------
-code(
-    """
-# Cell 6 - CONTROL B (model-randomization): re-init the VISION tower only.
-# Reload a fresh model copy so the trained singleton is NOT clobbered (the
-# singleton stays trained for any later use). Keep the text tower trained.
-# PASS by eye: randomized overlay collapses to STRUCTURELESS NOISE next to the
-# structured trained map. FAIL: still structured.
-from transformers import AutoModel
-from mapclass import config as _cfg
-
-rand_model = (
-    AutoModel.from_pretrained(_cfg.LOCAL_MODEL_CACHE_DIR,
-                              attn_implementation="eager")
-    .to(_cfg.DEVICE).eval()
-)
-
-@torch.no_grad()
-def _reinit(module):
-    for _n, p in module.named_parameters(recurse=False):
-        if p.dim() >= 2:
-            torch.nn.init.xavier_uniform_(p)
-        else:
-            torch.nn.init.zeros_(p)
-
-rand_model.vision_model.apply(_reinit)  # VISION tower only; text tower intact
-
-it_r, ii_r, am_r, _pil_r = load_slice(entry, "a river")
-res_rand = attribute(rand_model, it_r, ii_r, am_r)
-gr_signed, gr_mag = to_patch_grid(res_rand.relevance)
-
-fig, axs = plt.subplots(1, 2, figsize=(16, 8))
-composite(axs[0], pil, grid_signed, grid_mag,
-          title='trained vision tower - "a river"')
-composite(axs[1], pil, gr_signed, gr_mag,
-          title='RANDOMIZED vision tower - "a river"')
-fig.suptitle("CONTROL B - model-randomization "
-             "(eyeball: randomized must collapse to noise)")
-fig.tight_layout(); plt.show()
-
-del rand_model, it_r, ii_r, am_r
-torch.cuda.empty_cache()
-"""
-)
-
-# --- Cell 7: CONTROL C occlusion -----------------------------------------
-code(
-    """
-# Cell 7 - CONTROL C (occlusion): mean-fill the top-k highest-relevance 14x14
-# patches vs k RANDOM patches; recompute logits_per_image[0,0] for each.
-# PASS by eye: occluding TOP-relevance patches drops similarity MORE than
-# random. The similarity numbers are RENDERED INTO the figure as captions
-# (a visual annotation, NOT a printed scalar / assert - consistent with D-03).
-from mapclass.overlay import GRID, PATCH_SIZE, VALID_DIM
-
-K = 20  # number of 14x14 patches to occlude
-
-@torch.no_grad()
-def _similarity(px):
-    out = model(pixel_values=px, input_ids=input_ids,
-                attention_mask=attention_mask)
-    return float(out.logits_per_image[0, 0].item())
-
-# Per-patch relevance ordering from the control "a river" run (magnitude).
-flat_order = np.argsort(grid_mag.ravel())[::-1]  # high -> low
-topk_idx = flat_order[:K]
-rng = np.random.default_rng(SEED)
-rand_idx = rng.choice(GRID * GRID, size=K, replace=False)
-
-base_px = img_tensor.detach().clone()
-fill = base_px.mean().item()
-
-def _occlude(idxs):
-    px = base_px.clone()
-    for fi in idxs:
-        r, c = divmod(int(fi), GRID)
-        y0, x0 = r * PATCH_SIZE, c * PATCH_SIZE
-        px[:, :, y0:y0 + PATCH_SIZE, x0:x0 + PATCH_SIZE] = fill
-    return px
-
-px_top = _occlude(topk_idx)
-px_rand = _occlude(rand_idx)
-sim_orig = _similarity(base_px)
-sim_top = _similarity(px_top)
-sim_rand = _similarity(px_rand)
-
-def _to_disp(px):
-    a = px.detach()[0].cpu().float()
-    a = (a - a.min()) / (a.max() - a.min() + 1e-8)
-    return a.permute(1, 2, 0).numpy()
-
-fig, axs = plt.subplots(1, 3, figsize=(21, 7))
-axs[0].imshow(_to_disp(base_px))
-axs[0].set_title(f"original\\nsimilarity = {sim_orig:.4f}")
-axs[0].set_axis_off()
-axs[1].imshow(_to_disp(px_top))
-axs[1].set_title(f"top-{K} relevance occluded\\nsimilarity = {sim_top:.4f}\\n"
-                 f"drop = {sim_orig - sim_top:+.4f}")
-axs[1].set_axis_off()
-axs[2].imshow(_to_disp(px_rand))
-axs[2].set_title(f"{K} RANDOM patches occluded\\nsimilarity = {sim_rand:.4f}\\n"
-                 f"drop = {sim_orig - sim_rand:+.4f}")
-axs[2].set_axis_off()
-fig.suptitle("CONTROL C - occlusion "
-             "(eyeball: top-k drop should exceed random drop)")
-fig.tight_layout(); plt.show()
-torch.cuda.empty_cache()
-"""
-)
-
-# --- Cell 8: markdown summary --------------------------------------------
+# --- Cell 6: finding markdown --------------------------------------------
 md(
     """
-## Phase 1 Visual Eyeball Gate (D-02 / D-03 / D-04)
+## FINDING — dynamicLRP op-coverage on SigLIP-2 (user-accepted; Fallback Ladder DECLINED)
 
-This is a **pure visual judgment** — no quantitative threshold or `assert` is
-applied to the three controls (D-04 explicit prohibition). Judge each by eye
-from the figures above:
+**dynamicLRP op-coverage FINDING.** SigLIP-2-so400m's MAP-pool /
+attention-pooling head uses the `split_with_sizes` op
+(`SplitWithSizesBackward0` in the autograd graph). The current dynamicLRP
+engine registers `SplitWithSizesBackward → SplitBackwardProp` but its Promise
+consumer chokes on SigLIP-2's split topology (`'DummyPromise' object is not
+iterable` / `No valid curnode candidate was found`), and a 0-dim target form
+raises `IndexError`. **`split_with_sizes` is outside the current engine's
+covered ops for SigLIP-2 as a contrastive MAP-pool encoder, so no LRP
+relevance — and therefore no attribution heatmap — is produced for this
+model.** This is exactly the MEDIUM-LOW research risk flagged in `CLAUDE.md`
+(*"Whether dynamicLRP covers 100% of SigLIP-2's specific ops out of the box —
+MEDIUM-LOW"*).
 
-| Control | PASS (by eye) | FAIL (by eye) |
-|---|---|---|
-| **A. Query-swap** (`"a river"` vs `"a xylophone"`, adjacent) | Heatmaps highlight **substantially different** regions | Heatmaps look essentially the same → image-saliency, not query-driven |
-| **B. Model-randomization** (randomized vision tower next to trained) | Randomized overlay collapses to **structureless noise** | Randomized overlay still structured → not reading the model |
-| **C. Occlusion** (original / top-k-occluded / random-occluded triptych) | Occluding **top-relevance** patches drops similarity **more** than random | top-k drop ≈ random drop → MAP-pool relevance not faithful |
+**This is a recorded per-model RESULT for the multi-model dynamic-LRP
+comparison**, the reframed purpose of the project — not a project failure.
 
-**Peak VRAM** for the single so400m + LRP attribution is printed in Cell 4
-(gates Phase 2 sweep sizing — STATE.md blocker).
+**Fallback Ladder: DECLINED by the user** at the 01-03 human-verify checkpoint
+(2026-05-19). The user reviewed the smoke-test and the finding and explicitly
+declined **every** rung — **no** custom dynamicLRP Promise, **no**
+pre-pool / `use_attn_lrp` engineering, **no** vendored LXT, **no** captum
+Integrated Gradients baseline. Quote: *"Smoke-test was good, it didn't crash.
+Let's leave well enough alone and move on."* This must **not** be
+re-attempted later (also recorded in the `attribution.py` module docstring and
+`01-03-SUMMARY.md`).
 
-**Phase 1 is DONE** only when BOTH: (1) all three controls visually PASS here
-(D-03), AND (2) the full 1,544-image mirror + outcome manifest from Plan 01-02
-is confirmed complete (D-02 — verified APPROVED in 01-02-SUMMARY.md). On any
-control FAIL, the documented **Fallback Ladder** in `attribution.py` is the
-response path.
+**Phase 1 D-02/D-03 visual-eyeball gate: WAIVED for SigLIP-2.** The three
+sanity controls (query-swap, model-randomization, occlusion) are **NOT**
+rendered here because **no relevance exists to overlay** — there is nothing to
+eyeball. This is a *consciously waived* gate for SigLIP-2 under the reframed
+multi-model-comparison purpose, recorded honestly in `01-03-SUMMARY.md`. It is
+**not** a silent pass and **not** "all controls passed".
+
+**Smoke-test status — PASS (honest):**
+
+| Item | Result |
+|---|---|
+| Pinned env + GCS-mirrored SigLIP-2 loads | OK |
+| Locked slice (`manifest[-1]`, `"a river"`) `requires_grad` `(1,3,384,384)` tensor built via loaders | OK |
+| SigLIP-2 forward + `logits_per_image[0,0]` similarity | OK |
+| **Peak forward VRAM measured + recorded** (Cell 4 — STATE.md blocker CLOSED) | OK |
+| dynamicLRP coverage probe op count printed (Cell 3) | OK |
+| dynamicLRP `attribute()` — `split_with_sizes` coverage gap, **caught** as a recorded finding | FINDING (no heatmap) |
+| Three D-02/D-03 sanity controls | **WAIVED for SigLIP-2** (no relevance to render) |
+| Notebook runs end-to-end, exit code 0 | OK |
 """
 )
 
