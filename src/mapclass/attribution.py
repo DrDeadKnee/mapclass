@@ -223,65 +223,105 @@ def attribute(
     if target_fn is None:
         target_fn = _siglip2_target_fn
 
+    import gc
+
     on_cuda = torch.cuda.is_available()
     if on_cuda:
         torch.cuda.reset_peak_memory_stats()
 
-    # ----- forward (live grad_fn graph; img_tensor identity preserved) -----
-    output = model(**forward_inputs)
-    target0 = target_fn(model, output, forward_inputs)
-    similarity = float(target0.detach().reshape(-1)[0].item())
+    # Pitfall E — the dynamicLRP Promise system + ``no_recompile=True`` RETAINS
+    # the full forward-activation graph on the GPU. The v1.0 code only freed it
+    # on the success path; a FAILED attribution (e.g. SigLIP-2's
+    # ``split_with_sizes`` op-coverage RuntimeError) leaked the retained graph
+    # for the lifetime of the caller. In the v1.1 sequential 4-model × 50-map
+    # loop that leak accumulates and OOMs every model after the first. The
+    # whole forward+engine region is therefore wrapped so the graph (output /
+    # engine / intermediates) is dropped and the CUDA cache emptied in EVERY
+    # exit path — success, all-forms-rejected, and exception. The returned
+    # relevance is detached+cloned OFF the graph so it cannot keep it alive.
+    output = None
+    engine = None
+    param_vals = None
+    relevance = None
+    target_form = None
+    similarity = float("nan")
+    last_err: Optional[Exception] = None
 
-    # ----- target-form fallback ladder (Empirical Risk 1 / Assumption A5) ---
-    # 0-dim scalar first; the ViT path used 2-D logits, so a 0-dim target may
-    # be rejected — fall back to a 2-D [:1,:1] slice, then a 1-D reshape(1).
     def _as_2d(t):
         return t.reshape(1, 1) if t.dim() == 0 else t.reshape(1, -1)[:1, :1]
 
-    candidates = (
-        ("scalar_0d", lambda: target_fn(model, output, forward_inputs)),
-        ("slice_2d", lambda: _as_2d(target_fn(model, output, forward_inputs))),
-        (
-            "reshape_1d",
-            lambda: target_fn(model, output, forward_inputs).reshape(-1)[:1],
-        ),
-    )
+    try:
+        # ----- forward (live grad_fn graph; img_tensor identity preserved) --
+        output = model(**forward_inputs)
+        target0 = target_fn(model, output, forward_inputs)
+        similarity = float(target0.detach().reshape(-1)[0].item())
 
-    relevance = None
-    target_form = None
-    last_err: Optional[Exception] = None
-    for form_name, make_target in candidates:
-        try:
-            engine = LRPEngine(
-                use_gamma=_USE_GAMMA,
-                no_recompile=_NO_RECOMPILE,
-                relevance_filter=_RELEVANCE_FILTER,
-            )
-            engine.params_to_interpret = [img_tensor]  # SAME object as forward
-            _ckpt_vals, param_vals = engine.run(make_target())
-            relevance = param_vals[0]  # positionally matches params_to_interpret
-            target_form = form_name
-            break
-        except Exception as exc:  # dimensionality / engine error → next form
-            last_err = exc
-            continue
-
-    if relevance is None:
-        raise RuntimeError(
-            "LRPEngine.run rejected every target form "
-            "(scalar_0d / slice_2d / reshape_1d). Last error: "
-            f"{last_err!r}. See the Fallback Ladder in this module's "
-            "docstring (steps 2-5) for the escalation path."
+        # ----- target-form fallback ladder (Empirical Risk 1 / A5) ---------
+        # 0-dim scalar first; ViT used 2-D logits, so a 0-dim target may be
+        # rejected — fall back to a 2-D [:1,:1] slice, then a 1-D reshape(1).
+        candidates = (
+            ("scalar_0d", lambda: target_fn(model, output, forward_inputs)),
+            (
+                "slice_2d",
+                lambda: _as_2d(target_fn(model, output, forward_inputs)),
+            ),
+            (
+                "reshape_1d",
+                lambda: target_fn(
+                    model, output, forward_inputs
+                ).reshape(-1)[:1],
+            ),
         )
 
-    peak_vram = (
-        int(torch.cuda.max_memory_allocated()) if on_cuda else None
-    )
-    _empty_cuda_cache()  # Pitfall E — free the retained activation graph
+        for form_name, make_target in candidates:
+            try:
+                engine = LRPEngine(
+                    use_gamma=_USE_GAMMA,
+                    no_recompile=_NO_RECOMPILE,
+                    relevance_filter=_RELEVANCE_FILTER,
+                )
+                # SAME object as the forward (tensor-identity invariant).
+                engine.params_to_interpret = [img_tensor]
+                _ckpt_vals, param_vals = engine.run(make_target())
+                # Detach + clone OFF the retained graph so the returned
+                # relevance does not keep the activation graph alive.
+                relevance = param_vals[0].detach().clone()
+                target_form = form_name
+                break
+            except Exception as exc:  # dimensionality / engine error → next
+                last_err = exc
+                engine = None
+                param_vals = None
+                continue
 
-    return AttributionResult(
-        relevance=relevance,
-        target_form=target_form,
-        peak_vram_bytes=peak_vram,
-        similarity=similarity,
-    )
+        if relevance is None:
+            raise RuntimeError(
+                "LRPEngine.run rejected every target form "
+                "(scalar_0d / slice_2d / reshape_1d). Last error: "
+                f"{last_err!r}. See the Fallback Ladder in this module's "
+                "docstring (steps 2-5) for the escalation path."
+            )
+
+        peak_vram = (
+            int(torch.cuda.max_memory_allocated()) if on_cuda else None
+        )
+        return AttributionResult(
+            relevance=relevance,
+            target_form=target_form,
+            peak_vram_bytes=peak_vram,
+            similarity=similarity,
+        )
+    finally:
+        # Drop EVERY reference to the retained activation graph regardless of
+        # how we exit (Pitfall E). Without this the SigLIP-2 op-coverage
+        # failure leaks ~6 GB that survives the caller's del + gc.
+        del output, engine, param_vals
+        try:
+            del target0
+        except Exception:
+            pass
+        for _v in ("candidates",):
+            if _v in dir():
+                pass
+        gc.collect()
+        _empty_cuda_cache()  # Pitfall E — free the retained activation graph
