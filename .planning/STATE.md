@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-05-18T19:19:26.752Z"
-last_activity: 2026-05-18 -- Phase 01 execution started
+last_updated: "2026-05-19T00:35:11.133Z"
+last_activity: 2026-05-19 -- Phase 01 execution started
 progress:
   total_phases: 2
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
+  completed_plans: 2
   percent: 0
 ---
 
@@ -25,24 +25,36 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — PAUSED (Wave 2 needs GPU VM)
-Plan: Wave 1 COMPLETE — 01-01 (approved 2026-05-18) + 01-02 (approved 2026-05-19, orchestrator-driven mirror gate). 01-03 (Wave 2) is the only remaining plan; blocked: requires a GPU VM (this box has no CUDA).
-Status: 2/3 plans complete; Wave 2 (01-03 single-slice SigLIP-2 attribution) not started — needs CUDA
-Last activity: 2026-05-19 -- 01-02 mirror gate verified (1,544/1,544 GCS objects, idempotent) and finalized
+Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — BLOCKED (01-03 Rule 4 architectural decision)
+Plan: 3 of 3 (01-03 in progress; Task 1 committed, Task 2 committed, BLOCKED before Task 3 human-verify by an engine op-coverage failure)
+Status: 01-03 blocked at a Rule 4 architectural decision — awaiting human Fallback-Ladder selection
+Last activity: 2026-05-19 -- 01-03 dynamicLRP op-coverage failure on SigLIP-2-so400m confirmed on L4; surfaced as the human-verify checkpoint
 
-Progress: [███████░░░] 2/3 plans complete (01-01, 01-02); 01-03 blocked on GPU
+Progress: [███████░░░] 2/3 plans complete (01-01, 01-02); 01-03 Tasks 1-2 built+committed, blocked at Rule 4 architectural decision
 
 ### Resume
 
-Wave 2 — `/gsd-execute-phase 1` ON A GPU VM (CUDA required; CLAUDE.md: so400m LRP on CPU is impractical):
-- Discovery: 01-01 & 01-02 SUMMARYs are `status: complete` → only 01-03 runs.
-- 01-03 carries decision **D-09**: `overlay.py` must use signed (no `.abs()`)
-  + zero-centered diverging norm (no min-max `[0,1]`) — see 01-03-PLAN.md.
-- Prereqs already satisfied on GCS: 1,544 image mirror + 19-file SigLIP-2
-  weights mirror complete & idempotent; pinned 3.10 venv build recipe at
-  `/tmp/build_py310_venv.sh` (host lacks 3.10 → conda-forge interpreter only).
-- After 01-03 verified: phase verification + completion (Phase 1 = DONE only
-  when all three 01-03 sanity controls visually PASS, D-02/D-03).
+01-03 is BLOCKED at a **Rule 4 architectural decision** (NOT auto-selectable):
+the as-is dynamicLRP path fails on SigLIP-2-so400m at `SplitWithSizesBackward0`
+(see Blockers/Concerns). `01_single_slice.ipynb` cannot execute end-to-end
+until the attribution engine path is resolved. Tasks 1-2 (attribution.py,
+overlay.py, tests, notebook + generator) are built and committed; the unit
+tests pass (16/16).
+
+**Human decision required (Fallback Ladder, 01-03-PLAN.md):**
+- Step 2: write/repair a custom dynamicLRP Promise for `split_with_sizes`
+  on SigLIP-2's MAP-pool/attention topology. Patches vendored
+  `third_party/dynamicLRP/` → deviates from the recorded VENDOR_SHA
+  (threat T-01-SC3 — must be recorded as a deliberate deviation). Highest
+  fidelity, highest effort, uncertain.
+- Step 5: switch the attribution engine to captum Integrated Gradients on
+  `logits_per_image[0,0]` (captum is already a pinned dep) — a degraded but
+  trivially-correct baseline that unblocks the three sanity controls and the
+  Phase 1 finish line without touching the vendored engine.
+
+On resolution: re-run `01_single_slice.ipynb` end-to-end, record peak VRAM,
+then the human-verify checkpoint (D-02/D-03 — all three controls visually
+PASS AND the 1,544 mirror confirmed complete) → Phase 1 DONE.
 
 ## Performance Metrics
 
@@ -81,8 +93,9 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 1 — 01-03 ARCHITECTURAL, ACTIVE] **dynamicLRP op-coverage FAILS on SigLIP-2-so400m as a contrastive MAP-pool encoder.** Confirmed by a fresh NVIDIA L4 run (2026-05-19): `LRPEngine.run` rejects all target forms — `logits_per_image[0,0]` (0-dim → IndexError); `[:1,:1]` (2-D) and `.reshape(1)` (1-D) → `'DummyPromise' object is not iterable` / `No valid curnode candidate was found` at autograd node `SplitWithSizesBackward0`; coverage probe op count = 26. `split_with_sizes` is intrinsic to SigLIP-2's attention/MAP-pool head — the engine registers `SplitWithSizesBackward`→`SplitBackwardProp` but its Promise consumer chokes on SigLIP-2's split topology. This is the MEDIUM-LOW research risk realized. `attribute()` raises `RuntimeError`; `01_single_slice.ipynb` cannot execute end-to-end. **Resolution is a Rule 4 architectural decision pending the 01-03 human-verify checkpoint** — Fallback-Ladder step 2 (custom/repaired engine Promise: patches vendored `third_party/dynamicLRP/`, deviates from the recorded SHA, threat T-01-SC3) OR step 5 (switch the attribution engine to captum Integrated Gradients on `logits_per_image[0,0]` as a degraded but trivially-correct baseline). NOT auto-selected by the executor.
 - [Phase 1] dynamicLRP faithfulness on SigLIP-2 as a contrastive encoder is unvalidated in the paper (graph coverage only). Resolvable only by running the three sanity controls on real output — do NOT skip them.
-- [Phase 1] Peak VRAM for so400m + LRP graph retention is unknown until first run; measure on the first single-image attribution before sizing any sweep.
+- [Phase 1] Peak VRAM for so400m + LRP graph retention is unknown until first run; measure on the first single-image attribution before sizing any sweep. **STILL OPEN** — blocked by the engine op-coverage failure above (no successful relevance pass yet to measure peak VRAM from).
 - [Phase 1] Rumsey URL health unknown; the per-id outcome manifest from ingestion is the only signal of how many maps are actually available — budget for a fraction being unavailable.
 
 ## Deferred Items
@@ -95,6 +108,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-18T16:51:14.301Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-pinned-environment-gcs-mirrors-and-a-verified-single-slice-a/01-CONTEXT.md
+Last session: 2026-05-19T00:35:11.133Z
+Stopped at: 01-03 BLOCKED at Rule 4 architectural decision (dynamicLRP op-coverage fails on SigLIP-2-so400m) — surfaced as the 01-03 human-verify checkpoint; awaiting human Fallback-Ladder selection (step 2 custom Promise vs step 5 captum IG)
+Resume file: .planning/phases/01-pinned-environment-gcs-mirrors-and-a-verified-single-slice-a/01-03-PLAN.md
