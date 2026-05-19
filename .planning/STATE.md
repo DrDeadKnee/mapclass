@@ -1,12 +1,12 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.1
-milestone_name: Multi-Model Dynamic-LRP Comparison
+milestone_name: Multi-Model x Multi-Map Attribution Notebook
 status: planning
-last_updated: "2026-05-19T02:00:00.000Z"
-last_activity: 2026-05-19
+last_updated: "2026-05-19T02:30:00.000Z"
+last_activity: 2026-05-19 -- roadmap simplified to 1 phase per user
 progress:
-  total_phases: 5
+  total_phases: 1
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,30 +19,33 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-05-19)
 
-**Core value:** A working, repeatable cross-model comparison — pick the locked map + a text query → run dynamic-LRP attribution through SigLIP-2 / CLIP / PaliGemma / a plain ViT → see their heatmaps side-by-side (and, per model, whether dynamic LRP covers that architecture at all) → judge visually. The comparison itself is the product.
-**Current focus:** Phase 1 — Adapter Contract + Pre-Flight Guards
+**Core value:** One notebook that runs dynamic-LRP attribution for several models against several maps and shows the heatmaps for a human to eyeball. Models + maps both from the GCS buckets in the README.
+**Current focus:** Phase 1 — Multi-Model × Multi-Map Attribution Notebook
 
 ## Current Position
 
-Phase: 1 of 5 (Adapter Contract + Pre-Flight Guards)
+Phase: 1 of 1 (Multi-Model × Multi-Map Attribution Notebook)
 Plan: — (not yet planned)
 Status: Ready to plan
-Last activity: 2026-05-19 — v1.1 roadmap created (5 phases, --reset-phase-numbers active; v1.0 archived to .planning/archive/v1.0-milestone/)
+Last activity: 2026-05-19 — roadmap simplified to a single lean phase per user ("getting over complicated — just want a notebook that runs multiple models against multiple maps")
 
 Progress: [░░░░░░░░░░] 0%
 
 ### Resume
 
-v1.1 roadmap is freshly created. 14 requirements (ADPT-01..04, ATTR-01..03,
-MODEL-01..04, CMP-01..03) mapped across 5 phases, 100% coverage. PROJECT.md /
-REQUIREMENTS.md are already reconciled to the multi-model framing (the prior
-v1.0 scope tension is resolved by the v1.1 milestone definition; SigLIP-2's
-recorded `SplitWithSizesBackward0` op-coverage gap is now the regression-oracle
-datum, not a bug). v1.0 infra (pinned env, GCS image mirror, loaders, D-09
-signed/zero-centered overlay) is reused as-is. Hard ordering preserved: adapter
-contract + target decision + guards (Phase 1) → parameterized overlay +
-SigLIP-2 oracle (Phase 2) → ViT (Phase 3) → CLIP + PaliGemma (Phase 4) →
-side-by-side notebook done-gate (Phase 5). Next: `/gsd:plan-phase 1`.
+Roadmap was deliberately collapsed from 5 phases to 1 at the user's request.
+Scope: ONE notebook running 4 models (SigLIP-2, CLIP, ViT-b-16, PaliGemma-3B)
+against the last 50 Rumsey manifest maps, dynamic-LRP attribution overlays,
+failures as captioned "no heatmap" tiles, headless exit 0. Models from
+`gs://mapclass-training-northeast1/models/` (SigLIP-2 mirrored; PaliGemma
+ALREADY at `models/paligemma-3b-mix-224/` — NOT gated, full code+weights there;
+CLIP + ViT-b-16 to be mirrored). Maps from `gs://.../data/` (1,544 mirrored in
+v1.0; use manifest[-50:]). Reuse v1.0 code (loaders, attribution, overlay,
+mirror_model) — generalize with PLAIN per-model functions; NO adapter Protocol /
+PatchGeometry dataclass / conformance-test or pre-flight-guard scaffold (user
+called that over-complicated and it is now Out of Scope). Coverage gaps stay
+recorded results; VENDOR_SHA + frozen pins untouched. 7 reqs (MODEL-01..02,
+ATTR-01..02, NB-01..03) all map to Phase 1. Next: `/gsd-plan-phase 1`.
 
 ## Performance Metrics
 
