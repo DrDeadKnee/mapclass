@@ -55,7 +55,7 @@ class _FakeOutput:
 class _FakeModel:
     """A tiny differentiable image→similarity graph in the SAME scope."""
 
-    def __call__(self, pixel_values, input_ids, attention_mask):
+    def __call__(self, pixel_values, input_ids=None, attention_mask=None):
         # A real grad path from the input pixels to a (1,1) similarity tensor.
         sim = pixel_values.mean() * 3.0 + pixel_values.sum() * 1e-6
         return _FakeOutput(sim.reshape(1, 1))
@@ -140,9 +140,15 @@ def test_no_forbidden_targets():
 
 
 def test_tensor_identity_preserved():
-    """img_tensor flows unchanged into forward AND params_to_interpret."""
+    """img_tensor flows unchanged into forward AND params_to_interpret.
+
+    v1.1: the forward is now generic ``model(**forward_inputs)`` where
+    ``forward_inputs["pixel_values"]`` IS the requires_grad ``img_tensor``
+    object (built once in models.build_inputs_fn). The engine still resolves
+    relevance by tensor identity via ``params_to_interpret = [img_tensor]``.
+    """
     assert "params_to_interpret = [img_tensor]" in _ATTR_SRC
-    assert "pixel_values=img_tensor" in _ATTR_SRC
+    assert "model(**forward_inputs)" in _ATTR_SRC
     # No clone/detach/re-.to() applied to img_tensor before the engine runs.
     assert "img_tensor.clone()" not in _ATTR_SRC
     assert "img_tensor.detach()" not in _ATTR_SRC

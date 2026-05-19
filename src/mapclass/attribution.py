@@ -161,37 +161,90 @@ def coverage_probe(model, img_tensor, input_ids, attention_mask):
     return LRPEngine.get_model_operations(target)
 
 
-def attribute(model, img_tensor, input_ids, attention_mask) -> AttributionResult:
+def _siglip2_target_fn(model, output, forward_inputs):
+    """Default (v1.0) target: SigLIP-2/CLIP contrastive similarity scalar.
+
+    The attribution target is ``output.logits_per_image[0, 0]`` (Pitfall B) —
+    query-conditioned image–text similarity, NOT a pooled embedding.
+    """
+    return output.logits_per_image[0, 0]
+
+
+def attribute(
+    model,
+    forward_inputs,
+    img_tensor=None,
+    target_fn=None,
+    attention_mask=None,
+) -> AttributionResult:
     """Forward + dynamic LRP in ONE scope → input-shaped signed relevance.
 
-    The SAME ``img_tensor`` object flows into both the forward and
-    ``engine.params_to_interpret`` (Pattern 2). The attribution target is
-    ``output.logits_per_image[0, 0]`` (Pitfall B). Empirical Risk 1: the 0-dim
-    scalar is tried first; on a dimensionality error we fall back to ``[:1,
-    :1]`` then ``.reshape(1)`` and record which form worked.
+    GENERIC (v1.1, MODEL-02): runs ``model(**forward_inputs)`` in ONE scope,
+    builds the per-model query-conditioned target via
+    ``target_fn(model, output, forward_inputs)``, then runs the dynamicLRP
+    relevance pass with ``engine.params_to_interpret = [img_tensor]`` — the
+    SAME ``img_tensor`` object that ``forward_inputs["pixel_values"]`` carries
+    (Pattern 2 tensor-identity invariant; NO clone/detach/re-.to()).
+
+    BACKWARD-COMPATIBLE (v1.0): the legacy SigLIP-2 call
+    ``attribute(model, img_tensor, input_ids, attention_mask)`` is still
+    accepted — when ``forward_inputs`` is a tensor (the old ``img_tensor``
+    positional) and ``img_tensor`` is the old ``input_ids``, the SigLIP-2
+    ``pixel_values``/``input_ids``/``attention_mask`` forward kwargs and the
+    default ``output.logits_per_image[0, 0]`` target are reconstructed.
+
+    Empirical Risk 1 / A5: the 0-dim scalar target is tried first; on a
+    dimensionality / engine error we fall back to a 2-D ``[:1,:1]`` slice then
+    a 1-D ``.reshape(1)`` and record which form worked. The SigLIP-2
+    ``split_with_sizes`` op-coverage RuntimeError is preserved (recorded
+    FINDING — Fallback Ladder DECLINED, do NOT re-attempt).
     """
     import torch
+
+    # ----- legacy-signature shim (v1.0 SigLIP-2 call) ----------------------
+    # Old: attribute(model, img_tensor, input_ids, attention_mask)
+    # New: attribute(model, forward_inputs: dict, img_tensor, target_fn)
+    if not isinstance(forward_inputs, dict):
+        legacy_img_tensor = forward_inputs
+        legacy_input_ids = img_tensor
+        legacy_attention_mask = (
+            target_fn if target_fn is not None else attention_mask
+        )
+        forward_inputs = {
+            "pixel_values": legacy_img_tensor,
+            "input_ids": legacy_input_ids,
+            "attention_mask": legacy_attention_mask,
+        }
+        img_tensor = legacy_img_tensor
+        target_fn = _siglip2_target_fn
+
+    if img_tensor is None:
+        img_tensor = forward_inputs["pixel_values"]
+    if target_fn is None:
+        target_fn = _siglip2_target_fn
 
     on_cuda = torch.cuda.is_available()
     if on_cuda:
         torch.cuda.reset_peak_memory_stats()
 
     # ----- forward (live grad_fn graph; img_tensor identity preserved) -----
-    output = model(
-        pixel_values=img_tensor,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-    )
-    sim_scalar = output.logits_per_image[0, 0]
-    similarity = float(sim_scalar.detach().item())
+    output = model(**forward_inputs)
+    target0 = target_fn(model, output, forward_inputs)
+    similarity = float(target0.detach().reshape(-1)[0].item())
 
     # ----- target-form fallback ladder (Empirical Risk 1 / Assumption A5) ---
     # 0-dim scalar first; the ViT path used 2-D logits, so a 0-dim target may
     # be rejected — fall back to a 2-D [:1,:1] slice, then a 1-D reshape(1).
+    def _as_2d(t):
+        return t.reshape(1, 1) if t.dim() == 0 else t.reshape(1, -1)[:1, :1]
+
     candidates = (
-        ("scalar_0d", lambda: output.logits_per_image[0, 0]),
-        ("slice_2d", lambda: output.logits_per_image[:1, :1]),
-        ("reshape_1d", lambda: output.logits_per_image[0, 0].reshape(1)),
+        ("scalar_0d", lambda: target_fn(model, output, forward_inputs)),
+        ("slice_2d", lambda: _as_2d(target_fn(model, output, forward_inputs))),
+        (
+            "reshape_1d",
+            lambda: target_fn(model, output, forward_inputs).reshape(-1)[:1],
+        ),
     )
 
     relevance = None

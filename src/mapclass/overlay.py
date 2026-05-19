@@ -34,38 +34,76 @@ VALID_DIM = GRID * PATCH_SIZE         # = 378  (discard last 6 px R/B)
 EDGE_DISCARD = IMG_DIM - VALID_DIM    # = 6
 
 
-def to_patch_grid(relevance) -> Tuple[np.ndarray, np.ndarray]:
-    """Reduce ``(1,3,384,384)`` relevance → a SIGNED and a MAGNITUDE 27×27 grid.
+def to_patch_grid(
+    relevance, patch_size: int = PATCH_SIZE, img_dim: int = IMG_DIM,
+    has_cls: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Reduce relevance → a SIGNED and a MAGNITUDE per-patch grid.
 
-    D-09: the signed path is ``relevance.sum(1)`` over channels with **NO
-    ``.abs()``** and **NO min-max to ``[0, 1]``** — the returned signed grid
-    keeps physical units (it can and should contain negative values for a
-    meaningful LRP map). The magnitude path is ``relevance.abs().sum(1)`` and
-    is ``>= 0`` by construction.
+    GEOMETRY-PARAMETERIZED (ATTR-02): the grid is reconstructed from the
+    MODEL's own ``patch_size`` / ``img_dim`` — NOT a hardcoded 27×27. The
+    defaults are the SigLIP-2 so400m-patch14-384 geometry (14 / 384 → 27×27)
+    so v1.0 callers that pass only ``relevance`` are unchanged.
 
-    Pitfall D: only the valid ``[:378, :378]`` region is used (the right /
-    bottom 6-px band is discarded, ``padding="valid"``); each ``378×378``
-    region is block-reduced ``reshape(27,14,27,14).mean((1,3))`` → ``(27,27)``.
+      * SigLIP-2  : 14 / 384 → 27×27
+      * CLIP-L/14 : 14 / 224 → 16×16
+      * ViT-b-16  : 16 / 224 → 14×14
 
-    Returns ``(grid_signed, grid_mag)`` as float ndarrays, each ``(27, 27)``.
+    D-09: the signed path is the channel-sum with **NO ``.abs()``** and **NO
+    min-max to ``[0, 1]``** — physical units preserved (negatives kept). The
+    magnitude path is the ``.abs()`` channel-sum (``>= 0``).
+
+    The real relevance for all four image models is at the PIXEL tensor
+    ``(1,3,H,W)`` (relevance is read at the input by tensor identity), so the
+    pixel-space reshape is the primary path and ``has_cls`` is a no-op there.
+    The ``has_cls`` strip ONLY applies if the relevance instead arrives
+    token-shaped ``(1, ntok, ...)`` (``ntok == grid*grid + 1``) — then index 0
+    (the CLS token) is discarded BEFORE the spatial reshape.
+
+    ``grid = img_dim // patch_size``; ``valid_dim = grid * patch_size``; the
+    right/bottom edge band (``img_dim - valid_dim``, ``padding="valid"``) is
+    discarded — exactly as the SigLIP-2 v1.0 path did.
+
+    Returns ``(grid_signed, grid_mag)`` as float ndarrays, each ``(grid, grid)``.
     """
-    r = relevance.detach()[0]                       # (3, 384, 384)
+    grid = img_dim // patch_size
+    valid_dim = grid * patch_size
 
-    r_signed = r.sum(0)                             # (384,384) SIGNED — no abs
-    r_mag = r.abs().sum(0)                          # (384,384) >= 0 magnitude
+    r = relevance.detach()
 
-    # Discard the last 6 px of the right and bottom edges (padding="valid").
-    # Concretely, with GRID=27 / PATCH_SIZE=14 this is:
-    #   vs[:378,:378].reshape(27,14,27,14).mean((1,3))  -> (27,27) per-patch
-    vs = r_signed[:VALID_DIM, :VALID_DIM]           # (378,378)
-    vm = r_mag[:VALID_DIM, :VALID_DIM]              # (378,378)
+    # --- token-shaped relevance branch (only if a model emits (1,ntok,...)) --
+    # Pixel relevance is (1, 3, H, W) -> 4-D; a token-shaped relevance is
+    # (1, ntok, feat) -> 3-D. Only then is CLS-strip meaningful.
+    if r.dim() == 3:
+        toks = r[0]                                 # (ntok, feat)
+        if has_cls and toks.shape[0] == grid * grid + 1:
+            toks = toks[1:]                         # drop CLS (token 0)
+        # (grid*grid, feat) -> per-token signed/mag over the feature dim,
+        # reshaped to the (grid, grid) spatial layout (row-major patch order).
+        signed = toks.sum(1).reshape(grid, grid)    # SIGNED — no abs
+        mag = toks.abs().sum(1).reshape(grid, grid) # >= 0
+        return (
+            signed.cpu().numpy().astype(np.float64),
+            mag.cpu().numpy().astype(np.float64),
+        )
+
+    # --- pixel-space path (the real path for all four image models) ---------
+    r = r[0]                                        # (3, H, W)
+
+    r_signed = r.sum(0)                             # (H,W) SIGNED — no abs
+    r_mag = r.abs().sum(0)                          # (H,W) >= 0 magnitude
+
+    # Discard the last (img_dim - valid_dim) px of the right/bottom edges
+    # (padding="valid"); block-reduce reshape(grid,patch,grid,patch).mean.
+    vs = r_signed[:valid_dim, :valid_dim]
+    vm = r_mag[:valid_dim, :valid_dim]
 
     grid_signed = vs.reshape(
-        GRID, PATCH_SIZE, GRID, PATCH_SIZE
+        grid, patch_size, grid, patch_size
     ).mean((1, 3))                                  # reshape(27,14,27,14) SIGNED
     grid_mag = vm.reshape(
-        GRID, PATCH_SIZE, GRID, PATCH_SIZE
-    ).mean((1, 3))                                  # reshape(27,14,27,14) >= 0
+        grid, patch_size, grid, patch_size
+    ).mean((1, 3))                                  # >= 0
 
     # NO min-max normalization (D-09). float ndarrays only.
     return (

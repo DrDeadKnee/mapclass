@@ -110,10 +110,18 @@ def test_build_inputs_preserves_pixel_tensor_identity_and_requires_grad():
 
 
 def test_no_protocol_or_dataclass_scaffold_in_source():
-    """KEEP IT SIMPLE — no adapter Protocol / PatchGeometry dataclass."""
-    assert "Protocol" not in _MODELS_SRC
+    """KEEP IT SIMPLE — no adapter Protocol / PatchGeometry dataclass code.
+
+    Guards against the rejected scaffold being (re)introduced as actual code
+    constructs — not prose. ``@dataclass`` is a decorator line; a Protocol
+    base or a PatchGeometry class would be ``class ...`` definitions.
+    """
+    import re
+
     assert "@dataclass" not in _MODELS_SRC
     assert "class PatchGeometry" not in _MODELS_SRC
+    assert not re.search(r"class\s+\w+\([^)]*Protocol[^)]*\)", _MODELS_SRC)
+    assert "import Protocol" not in _MODELS_SRC
 
 
 def test_no_forbidden_pooled_target_in_source():
