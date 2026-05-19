@@ -1,219 +1,303 @@
 # Architecture Research
 
-**Domain:** Single-researcher ML attribution pipeline (dynamic LRP on SigLIP-2 over GCS-hosted historical maps, inspected in JupyterLab on a remote GCP VM)
-**Researched:** 2026-05-18
-**Confidence:** MEDIUM — pipeline structure and the DynamicLRP integration mechanism are HIGH confidence (verified against the keeinlev/dynamicLRP source tree and the ViT example notebook); the SigLIP-2-specific adaptation is MEDIUM/LOW (no published CLIP/SigLIP example exists in the repo — this is the flagged risk).
+**Domain:** Multi-model dynamic-LRP attribution comparison harness (PyTorch VLMs + vendored dynamicLRP, JupyterLab on a remote GCP VM) — v1.1 milestone
+**Researched:** 2026-05-19
+**Confidence:** HIGH — grounded in the actual v1.0 source (`attribution.py`, `overlay.py`, `data_loader.py`, `model_loader.py`, `config.py`, `manifest.py`, `mirror_model.py`), the vendored `dynamicLRP/src/lrp_engine/lrp.py` engine contract, the 01-03 PLAN/SUMMARY findings, and the `_build_01_single_slice.py` notebook generator — all read directly 2026-05-19.
+
+> Supersedes the v1.0 single-model architecture in this file's prior revision (2026-05-18). v1.0's pipeline shape is preserved; v1.1 introduces exactly one new seam (a model-agnostic adapter) and parameterizes two invariant-bearing modules.
 
 ## Standard Architecture
 
-This is not a multi-user service. It is a **batch attribution pipeline with a notebook inspection front-end**. The right shape is a small Python package of single-responsibility modules called from thin notebook cells, with GCS as the only persistence layer. "Scale" here means "number of maps × queries in a sweep", not concurrent users.
+v1.0 is a **linear single-model pipeline hard-wired to SigLIP-2 at four points**: `model_loader.py` (SigLIP-only `AutoModel` singleton), `data_loader.py` (SigLIP `padding="max_length", max_length=64` tokenization), `attribution.py` (the literal `output.logits_per_image[0,0]` target), and `overlay.py` (module-level `PATCH_SIZE=14, IMG_DIM=384, GRID=27`). v1.1 must add **one model-agnostic adapter seam** that absorbs all four model-specific concerns, while the two load-bearing invariants — (a) the `requires_grad` pixel-tensor object identity from loader → forward → `params_to_interpret`, and (b) the D-09 signed / no-min-max / zero-centered `TwoSlopeNorm` overlay — survive unchanged, and `manifest`, `ingest_images`, and the vendored engine are reused verbatim.
 
-### System Overview
+### System Overview (v1.1 target)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                  INSPECTION LAYER (JupyterLab on VM)                   │
-├──────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────┐         ┌────────────────────────────────────┐  │
-│  │ single-slice cell│         │ sweep cell (contact-sheet display) │  │
-│  │ (1 map × 1 query)│         │ (N maps × Q queries, count down)   │  │
-│  └────────┬─────────┘         └──────────────────┬─────────────────┘  │
-│           │  calls thin Python API               │                    │
-├───────────┴──────────────────────────────────────┴───────────────────┤
-│                       ORCHESTRATION LAYER                              │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  sweep orchestrator  (iterate manifest subset × query set,       │  │
-│  │                       count DOWN from high index N, collect)     │  │
-│  └───────┬─────────────────────────┬─────────────────────┬─────────┘  │
-├──────────┼─────────────────────────┼─────────────────────┼────────────┤
-│          │            CORE PIPELINE COMPONENTS            │            │
-│  ┌───────▼──────┐  ┌───────────────▼─────┐  ┌─────────────▼────────┐  │
-│  │ data loader  │  │  attribution engine │  │  overlay / viz       │  │
-│  │ (map by ID   │→ │  (SigLIP-2 forward  │→ │  (heatmap → RGBA     │  │
-│  │  → PIL/tensor│  │   + DynamicLRP)     │  │   over source image) │  │
-│  └───────┬──────┘  └──────┬──────────────┘  └──────────────────────┘  │
-│          │                │ uses                                       │
-│  ┌───────▼──────┐  ┌──────▼──────────────┐                            │
-│  │ model loader │  │ manifest reader     │                            │
-│  │ (GCS mirror  │  │ (rumsey_manifest    │                            │
-│  │  → HF model) │  │  → entry by index)  │                            │
-│  └───────┬──────┘  └──────┬──────────────┘                            │
-├──────────┼─────────────────┼──────────────────────────────────────────┤
-│          │   SETUP / INGESTION (run-once, idempotent)                  │
-│  ┌───────▼─────────────────▼──────────────────────────────────────┐   │
-│  │  image ingestion (manifest image_url → download → GCS data/)    │   │
-│  │  model mirror    (HF google/siglip2-... → GCS models/)          │   │
-│  └────────────────────────────┬───────────────────────────────────┘   │
-├───────────────────────────────┼────────────────────────────────────────┤
-│                         STORAGE LAYER                                  │
-│   gs://mapclass-training-northeast1/data/    (mirrored map images)     │
-│   gs://mapclass-training-northeast1/models/  (mirrored SigLIP-2)       │
-│   metadata/rumsey_manifest.json              (local, 1,544 entries)    │
-└────────────────────────────────────────────────────────────────────────┘
+│                  notebooks/02_multimodel.ipynb                         │
+│  locked slice (manifest[-1]) + locked query → loop 4 adapters →        │
+│  per-model try/except → 2x2 grid of overlays (or "no heatmap" tile)    │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                 │  for adapter in REGISTRY:
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│        src/mapclass/adapters/   (THE NEW MODEL-AGNOSTIC SEAM)          │
+│  ┌──────────┐ ┌────────┐ ┌────────────┐ ┌──────────┐                  │
+│  │ siglip2  │ │  vit   │ │   clip     │ │paligemma │   (ordered list)  │
+│  │ adapter  │ │adapter │ │  adapter   │ │ adapter  │                   │
+│  └────┬─────┘ └───┬────┘ └─────┬──────┘ └────┬─────┘                   │
+│       │  each implements ModelAdapter:                                 │
+│       │  load() · build_inputs() · forward()                           │
+│       │  attribution_target() · patch_geometry()                       │
+└───────┼───────────┼────────────┼─────────────┼───────────────────────┘
+        │           │            │             │
+ ┌──────▼────┐ ┌────▼──────┐ ┌───▼─────────────▼────┐
+ │model_loader│ │data_loader│ │ attribution.attribute │   (REUSED core,
+ │(per-model_ │ │(image IO  │ │ forward + LRPEngine in │    modified API)
+ │ id singleton)│ cache;    │ │ ONE scope; identity inv)│
+ └────────────┘ │ generic)  │ └───────────┬───────────┘
+                └───────────┘  ┌───────────▼───────────┐
+                               │ overlay.to_patch_grid  │  (PARAMETERIZED
+                               │ / composite — geometry │   by adapter
+                               │ injected, not 27 const)│   PatchGeometry)
+                               └───────────────────────┘
+        │ all 4 forwards traverse the SAME vendored engine
+ ┌──────▼────────────────────────────────────────────────────────┐
+ │ third_party/dynamicLRP/src/lrp_engine  (UNCHANGED, SHA-pinned)  │
+ └─────────────────────────────────────────────────────────────────┘
+ ┌─────────────────────────────────────────────────────────────────┐
+ │ GCS gs://mapclass-training-northeast1  models/<id>/ + data/      │
+ └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
 
-| Component | Responsibility | Typical Implementation |
-|-----------|----------------|------------------------|
-| **manifest reader** | Parse `metadata/rumsey_manifest.json`; resolve entry by manifest index; expose "count down from index N" iteration | Plain function returning dicts; index = list position (higher = richer per PROJECT.md) |
-| **image ingestion** | One-time: for each manifest entry, download `image_url`, upload to `gs://.../data/<id>.jpg`. Idempotent (skip if blob exists) | `requests` + `google-cloud-storage`; resumable; logs failures, never blocks the loop |
-| **model mirror** | One-time: pull `google/siglip2-so400m-patch14-384` from HF, push the snapshot to `gs://.../models/siglip2-so400m-patch14-384/` | `huggingface_hub.snapshot_download` then recursive GCS upload |
-| **model loader** | Load SigLIP-2 + processor from the **GCS mirror** (not HF) onto GPU; force a known attention impl; cache the singleton | `AutoModel`/`AutoProcessor.from_pretrained(local_path, attn_implementation="eager")` after pulling mirror to local disk |
-| **data loader** | Given a map `id`, fetch the image from `gs://.../data/`, return a preprocessed tensor (with `requires_grad_()`) plus the original PIL for overlay | GCS download → PIL → SigLIP-2 processor → tensor on device |
-| **attribution engine** | The load-bearing component. Run SigLIP-2 forward for (image, text query), select the scalar similarity target, run DynamicLRP, return a per-patch/pixel relevance map | HF forward + `LRPEngine` from keeinlev/dynamicLRP (see "DynamicLRP ↔ SigLIP-2 Integration") |
-| **overlay / viz** | Reshape patch relevance → image grid, upsample to image size, render as a colored heatmap composited over the source map | numpy reshape + `matplotlib` (bwr/jet colormap, alpha~0.5), as in the repo's ViT notebook |
-| **sweep orchestrator** | Iterate `subset × queries`, count DOWN from high manifest index N, call data loader → attribution → overlay per pair, collect results for contact-sheet display | Nested loop + list of (id, query, overlay) tuples; resumable/skippable on per-item failure |
+| Component | Responsibility | New / Modified / Reused |
+|-----------|----------------|-------------------------|
+| `adapters/base.py` (`ModelAdapter` protocol + `PatchGeometry`) | The seam contract: `model_id`, `load()`, `build_inputs(pil,query,...)`, `forward(model,inputs)`, `attribution_target(output)`, `patch_geometry()` | **NEW** |
+| `adapters/registry.py` | Ordered list of the 4 adapter instances the notebook iterates (SigLIP-2 → ViT → CLIP → PaliGemma) | **NEW** |
+| `adapters/siglip2.py` | SigLIP-2 specifics extracted from v1.0: `AutoModel` eager, `padding=max_length/64`, `logits_per_image[0,0]`, `PatchGeometry(14,384)` → 27×27/6-px. Carries the known op-coverage gap as a recorded result | **NEW** (lifts v1.0 logic) |
+| `adapters/vit.py` | Plain `ViTForImageClassification`, **no text path** — query-conditioned via the query-mapped class logit; patch16/224 geometry | **NEW** |
+| `adapters/clip.py` | `CLIPModel`, CLIP processor, `logits_per_image[0,0]`, CLIP patch geometry | **NEW** |
+| `adapters/paligemma.py` | `PaliGemmaForConditionalGeneration`, query-conditioned target = answer-token logit (generative, non-contrastive); SigLIP-vision patch geometry | **NEW** |
+| `model_loader.py` | Cache-first GCS-mirror download + `from_pretrained` singleton, **keyed by model_id** (dict of singletons, not one global) | **MODIFIED** |
+| `mirror_model.py` | Mirror N checkpoints to `models/<id>/` (loop registry repo ids) instead of one hard-coded id | **MODIFIED** |
+| `data_loader.py` | Disk cache → GCS-miss → PIL decode (model-agnostic, kept); the SigLIP processor/tokenize call is **delegated to the adapter** | **MODIFIED** |
+| `attribution.py` | Forward + `LRPEngine` in one scope; target via `adapter.attribution_target(output)` not literal `logits_per_image[0,0]` | **MODIFIED** |
+| `overlay.py` | `to_patch_grid` / `composite` / `draw_patch_grid` take `PatchGeometry` instead of module-level `14/384/27`. D-09 rendering untouched | **MODIFIED** |
+| `config.py` | Single `MODEL_REPO_ID`/`MODEL_GCS_DIR` → a per-model registry map; `VENDOR_SHA`/cache paths unchanged | **MODIFIED** |
+| `manifest.py`, `ingest_images.py` | Locked-slice resolution / image GCS — model-agnostic | **REUSED unchanged** |
+| `third_party/dynamicLRP` | LRP engine traversed by all 4 forwards; coverage gaps recorded, never patched (Fallback Ladder declined, `VENDOR_SHA` intact) | **REUSED unchanged (SHA-pinned)** |
 
 ## Recommended Project Structure
 
 ```
-mapclass/
-├── metadata/
-│   └── rumsey_manifest.json        # local source of truth (1,544 entries)
-├── src/mapclass/
-│   ├── config.py                   # bucket name, model id, GCS prefixes, device
-│   ├── manifest.py                 # manifest reader + count-down-from-N iteration
-│   ├── ingest_images.py            # run-once: image_url → GCS data/  (idempotent)
-│   ├── mirror_model.py             # run-once: HF model → GCS models/  (idempotent)
-│   ├── model_loader.py             # GCS models/ → loaded SigLIP-2 + processor (cached)
-│   ├── data_loader.py              # id → GCS data/ → (tensor.requires_grad_(), PIL)
-│   ├── attribution.py              # SigLIP-2 forward + DynamicLRP → relevance map
-│   ├── overlay.py                  # relevance map → heatmap composited on source
-│   └── sweep.py                    # orchestrate subset × queries, collect overlays
-├── notebooks/
-│   ├── 01_single_slice.ipynb       # Phase 1: one map × one query, eyeball it
-│   └── 02_sweep.ipynb              # v1: contact-sheet of a configurable sweep
-├── third_party/dynamicLRP/         # vendored keeinlev/dynamicLRP (pin a commit)
-├── requirements.txt
-└── README.md
+src/mapclass/
+├── config.py                 # MODIFIED: MODELS = {id: ModelSpec(repo_id, gcs_dir)}
+├── manifest.py               # REUSED (locked slice = entry_by_index(m, -1))
+├── ingest_images.py          # REUSED (GCS bucket + image mirror)
+├── mirror_model.py           # MODIFIED: loop registry repo ids → models/<id>/
+├── model_loader.py           # MODIFIED: {model_id: (model, processor)} singletons
+├── data_loader.py            # MODIFIED: image IO kept; tokenize → adapter
+├── attribution.py            # MODIFIED: target via adapter.attribution_target
+├── overlay.py                # MODIFIED: PatchGeometry injected (D-09 untouched)
+└── adapters/                 # NEW: the model-agnostic seam
+    ├── __init__.py
+    ├── base.py               # ModelAdapter Protocol + PatchGeometry dataclass
+    ├── registry.py           # ordered [siglip2, vit, clip, paligemma]
+    ├── siglip2.py
+    ├── vit.py
+    ├── clip.py
+    └── paligemma.py
+notebooks/
+├── 01_single_slice.ipynb     # REUSED (SigLIP-2 smoke test / negative finding)
+├── _build_02_multimodel.py   # NEW: generator (mirrors _build_01 pattern)
+└── 02_multimodel.ipynb       # NEW: 4-model side-by-side comparison
+tests/
+├── test_attribution_shape.py # MODIFIED: parametrize over a synthetic adapter
+├── test_overlay_grid.py      # MODIFIED: parametrize geometry (27x27, 14x14, …)
+└── test_adapters.py          # NEW: protocol conformance + PatchGeometry math
 ```
 
 ### Structure Rationale
 
-- **`src/mapclass/` flat module package, not a deep hierarchy:** one researcher, ~8 small modules. Each module = one box in the diagram. Notebooks import and call; they hold no logic beyond parameters and display so the loop is reproducible from `.py` and testable without a kernel.
-- **Run-once setup separated from the loop (`ingest_images.py`, `mirror_model.py`):** these are slow, network-bound, idempotent, and must not be re-run every notebook session. They are scripts, not loop dependencies.
-- **`third_party/dynamicLRP/` vendored and commit-pinned:** it is "the load-bearing external dependency" (PROJECT.md), default branch `master`, packaged as `src/lrp_engine`, research-grade (Jupyter-Notebook repo, no PyPI release). Vendoring + pinning prevents an upstream change from silently breaking the only loop that must work. Add its `requirements.txt` deps to the project's.
-- **`config.py` centralizes the GCS layout and model id:** bucket/prefixes/model name appear in ingestion, mirror, model loader, and data loader; one place prevents drift.
+- **`adapters/` as a package, one module per model.** Each model's quirks are noisy and divergent: PaliGemma is generative, ViT has no text path, CLIP/SigLIP are contrastive with different patch grids. Co-locating each model's full vertical slice in one file keeps the cross-cutting `attribution.py`/`overlay.py`/`data_loader.py` small and model-agnostic. This is the Strategy + registry pattern — the standard answer for "one pipeline, swappable backends."
+- **Registry is an ordered list, not a name→adapter dict.** The notebook iterates a fixed build/comparison order (SigLIP-2 first as the known-negative oracle, then ViT/CLIP/PaliGemma); ordering is part of the comparison contract, so encode it as a list.
+- **Geometry travels with the adapter, not as `overlay.py` constants.** v1.0's `GRID=27` is `floor(384/14)`. A plain ViT-base and CLIP-base are `224/16=14`; PaliGemma's SigLIP vision tower differs again. Geometry must be a per-model value object the adapter computes and the overlay consumes.
+- **`data_loader.py` keeps image IO, loses tokenization.** The disk-cache → GCS-miss → PIL decode logic (DATA-04) is fully model-agnostic and battle-tested; only the `processor(text=…, images=…, padding=…)` call is SigLIP-specific. Split there: `data_loader` yields the PIL; the adapter turns `(pil, query)` into model-specific tensors.
 
-## DynamicLRP ↔ SigLIP-2 Integration (the central technical risk)
+## Architectural Patterns
 
-This is the make-or-break boundary. Findings are verified against the repo source tree and the ViT example notebook (`src/experiments/ViT.ipynb`, `src/lrp_engine/lrp.py`).
+### Pattern 1: ModelAdapter protocol (the seam)
 
-**How DynamicLRP attaches (HIGH confidence):**
-- **No model surgery, no forward hooks, no module replacement, no wrapping.** It operates *post-hoc on PyTorch's autograd computation graph*. `LRPEngine` walks the `grad_fn` chain of the model output, builds a topological graph (`make_graph_iter`), and back-propagates relevance through ~47 primitive tensor ops, using a "Promise System" to recover intermediate activations autograd discarded. (Source: `lrp_engine/lrp.py`, paper arXiv 2512.07010.)
-- **Required workflow (from the ViT notebook, verbatim pattern):**
-  1. Preprocess image → `img_tensor.unsqueeze(0).to(device).requires_grad_()`
-  2. Standard HF forward: `output = model(...)`
-  3. `engine = LRPEngine(use_gamma=True, no_recompile=True)`
-  4. `engine.params_to_interpret = [img_tensor]`
-  5. `lrp_output = engine.run(<scalar/target tensor>)`
-  6. Pixel attribution comes back via the `params_to_interpret` relevance; reshape to the patch grid and upsample for overlay.
-- **Implication for module boundaries:** the attribution engine must *own both the forward pass and the LRP call together* — they share the live autograd graph and the exact input tensor object. Do not split "run model" and "run LRP" across modules; the `grad_fn` chain and `params_to_interpret` identity must be preserved in one scope. The data loader must hand back the *same* `requires_grad_()` tensor that goes into both the forward pass and `params_to_interpret`.
+**What:** A `typing.Protocol` (structural — no inheritance required) plus a frozen `PatchGeometry` value object. One class per model implements it.
+**When to use:** Always — this is *the* v1.1 architectural change; every model-specific decision lives behind it.
+**Trade-offs:** One indirection layer; pays for itself the instant there is >1 model. The protocol must be wide enough for a generative VLM (PaliGemma) and a text-less classifier (ViT) without leaking model types into `attribution.py`.
 
-**The SigLIP-2-specific adaptation risk (MEDIUM/LOW — flagged, unverified):**
-- The repo's vision example is `ViTForImageClassification` — attribution target is **classification logits**. SigLIP-2 is a **dual-encoder contrastive model**: `Siglip2Model` forward returns `logits_per_image` / `logits_per_text` (image↔text similarity). The attribution target must be the **scalar image-text similarity for the chosen query** (e.g. `logits_per_image[0, 0]`), not class logits. The autograd graph from that scalar must trace back through the vision tower to `img_tensor`. This routing is the adaptation work; no published SigLIP/CLIP DynamicLRP example exists.
-- **Op-coverage uncertainty:** DynamicLRP claims 99.92% node coverage over 15 architectures incl. multimodal (DePlot), but SigLIP-2 was not in the tested set. SigLIP's attention pooling head, the sigmoid-loss similarity, and the text-tower contribution may hit ops needing a `model_specific/` shim (cf. existing `model_specific/mosaicbert.py`).
-- **Attention implementation:** load SigLIP-2 with `attn_implementation="eager"` rather than SDPA/flash. The ViT notebook ran with an SDPA backward and the engine lists SDPA among covered ops, but eager attention produces a plainer, fully-traced graph and is the lower-risk default for a first integration; revisit only if eager is too slow.
-- **Mitigation:** treat "single map × single query attribution actually traces SigLIP-2 → pixels" as a **dedicated de-risking spike at the very start of Phase 1**, before any sweep or overlay polish. Reproduce the repo's ViT notebook first to confirm the toolchain, *then* swap in SigLIP-2 and the similarity target.
+```python
+# src/mapclass/adapters/base.py
+from dataclasses import dataclass
+from typing import Protocol
+
+@dataclass(frozen=True)
+class PatchGeometry:
+    patch_size: int
+    img_dim: int
+    @property
+    def grid(self) -> int:          # floor(img_dim / patch_size)   (SigLIP: 27)
+        return self.img_dim // self.patch_size
+    @property
+    def valid_dim(self) -> int:     # grid * patch_size              (SigLIP: 378)
+        return self.grid * self.patch_size
+    @property
+    def edge_discard(self) -> int:  # img_dim - valid_dim (padding="valid"; SigLIP: 6)
+        return self.img_dim - self.valid_dim
+
+class ModelAdapter(Protocol):
+    model_id: str                    # GCS models/<model_id>/ key + tile label
+
+    def load(self) -> tuple[object, object]:
+        """(model, processor) — cache-first from GCS, .to(DEVICE).eval()."""
+    def build_inputs(self, pil, query, processor, device) -> dict:
+        """PIL + query → {'pixel_values': <requires_grad tensor>, ...}.
+        MUST call .requires_grad_() on pixel_values and NOT
+        clone/detach/re-.to() it afterward (identity invariant)."""
+    def forward(self, model, inputs: dict):
+        """model(**inputs) → raw output object."""
+    def attribution_target(self, output):
+        """Query-conditioned scalar/2-D tensor for LRPEngine.run.
+        SigLIP-2/CLIP: output.logits_per_image[0, 0].
+        PaliGemma: answer-token logit at the query position.
+        ViT: logit of the query-mapped class."""
+    def patch_geometry(self) -> PatchGeometry:
+        """Vision-tower patch grid for overlay reconstruction."""
+```
+
+### Pattern 2: Tensor-identity invariant preserved across heterogeneous forwards
+
+**What:** The `requires_grad_()` pixel tensor object built in `build_inputs` must be the *same Python object* passed to `model(**inputs)` and to `engine.params_to_interpret`. Verified in `lrp.py`: `run()` calls `make_graph_iter(root_nodes, params_to_interpret, …)` which resolves `params_to_interpret` by walking the live `grad_fn` chain and matching by **tensor object identity**. Any `.clone()`/`.detach()`/re-`.to()`/scope-close between build and `engine.run()` destroys the graph — exactly what v1.0's `attribution.py` and `data_loader.py` docstrings warn about ("no clone/detach/re-.to() after this line").
+**When to use:** Every adapter, non-negotiable. This is why `build_inputs` returns the dict containing the *live* tensor and `attribution.attribute()` (not the adapter) owns the `engine.run` call in one scope.
+**Trade-offs:** Constrains the adapter API — `build_inputs` may not post-process `pixel_values` after `requires_grad_()` (no normalize-after, no device move after). The discipline that worked for SigLIP-2 in v1.0 is generalized verbatim, not redesigned.
+
+```python
+# src/mapclass/attribution.py  (MODIFIED — adapter-driven; identity preserved)
+def attribute(adapter, model, inputs):           # inputs from adapter.build_inputs
+    img_tensor = inputs["pixel_values"]          # SAME object, requires_grad already set
+    output = adapter.forward(model, inputs)      # forward in THIS scope
+    target = adapter.attribution_target(output)  # per-model query-conditioned target
+    # 0d→2d→1d target-form fallback (v1.0 Empirical Risk 1) is retained here,
+    # generalized: SigLIP's IndexError-on-0d may not apply to ViT/CLIP logits.
+    engine = LRPEngine(use_gamma=False, no_recompile=True, relevance_filter=0.5)
+    engine.params_to_interpret = [img_tensor]    # SAME object as the forward input
+    _ckpt, param_vals = engine.run(target)
+    return param_vals[0]                          # input-shaped relevance
+```
+
+The forbidden-token grep guard in v1.0's `attribution.py` (asserting `get_image_features` / image-embedding-norm never appear) **moves into each adapter's `attribution_target`** — the cross-cutting module no longer names a target, so the Pitfall-B guard belongs where the target is now chosen.
+
+### Pattern 3: Geometry-parameterized overlay (kill the hard-coded 27)
+
+**What:** `to_patch_grid` / `composite` / `draw_patch_grid` accept a `PatchGeometry` and derive `reshape(grid, patch, grid, patch).mean((1,3))` from it. The D-09 signed-sum-no-`.abs()` / no-min-max / zero-centered `TwoSlopeNorm` `bwr` rendering is **unchanged** — only the grid dimensions are parameterized.
+**When to use:** All overlay calls in v1.1. SigLIP-2 stays `PatchGeometry(14,384)` → 27×27/6-px; ViT/CLIP supply their own.
+**Trade-offs:** Signature churn (callers pass geometry). The alternative — per-model overlay copies — duplicates the load-bearing D-09 signed-relevance logic and will drift; the v1.0 16 unit tests already lock the SigLIP numbers and just need parametrizing.
+
+```python
+# src/mapclass/overlay.py  (MODIFIED — geometry injected, D-09 untouched)
+def to_patch_grid(relevance, geom):                    # geom: PatchGeometry
+    r = relevance.detach()[0]                          # (3, H, W)
+    r_signed = r.sum(0); r_mag = r.abs().sum(0)        # D-09: signed (no abs) + magnitude
+    v, g, p = geom.valid_dim, geom.grid, geom.patch_size
+    grid_signed = r_signed[:v, :v].reshape(g, p, g, p).mean((1, 3))
+    grid_mag    = r_mag[:v, :v].reshape(g, p, g, p).mean((1, 3))
+    return grid_signed.cpu().numpy(), grid_mag.cpu().numpy()   # NO min-max (D-09)
+```
+
+### Pattern 4: Per-model fault isolation in the notebook ("no heatmap" tile is a result)
+
+**What:** The notebook loop wraps each model's `load → build_inputs → attribute → to_patch_grid → composite` in a `try/except Exception`. On failure it renders a labeled "NO HEATMAP — <op-coverage finding>" tile in that model's grid cell instead of aborting. This generalizes v1.0's "caught-finding cell" pattern (`01_single_slice.ipynb` Cell 5: catch the engine `RuntimeError`, render a FINDING cell, exit 0) to a 2×2 layout.
+**When to use:** The comparison notebook only. Per `PROJECT.md` Key Decisions, a model dynamicLRP cannot traverse is *the data*, not a bug — the harness must keep running and record it visually.
+**Trade-offs:** A broad `except` can mask unrelated bugs; mitigate by capturing `repr(exc)` + `traceback` into the tile caption (as v1.0 does) and running the per-model coverage probe (`LRPEngine.get_model_operations`) first as a recorded artifact.
+
+```python
+# notebooks/02_multimodel.ipynb  (loop skeleton)
+fig, axes = plt.subplots(2, 2, figsize=(20, 20))
+for ax, adapter in zip(axes.flat, REGISTRY):           # SigLIP-2, ViT, CLIP, PaliGemma
+    try:
+        model, proc = adapter.load()
+        inputs = adapter.build_inputs(pil, QUERY, proc, DEVICE)  # requires_grad tensor
+        relevance = attribute(adapter, model, inputs)            # forward+LRP one scope
+        gs, gm = to_patch_grid(relevance, adapter.patch_geometry())
+        composite(ax, pil, gs, gm, title=adapter.model_id)
+    except Exception as exc:
+        ax.imshow(pil); ax.set_axis_off()
+        ax.set_title(f"{adapter.model_id}: NO HEATMAP")
+        ax.text(0.5, 0.5, f"op-coverage finding:\n{type(exc).__name__}",
+                transform=ax.transAxes, ha="center", va="center",
+                bbox=dict(facecolor="white", alpha=0.8))
+    finally:
+        del model                                       # release before next model
+        torch.cuda.empty_cache()                        # Pitfall E — per-model free
+```
 
 ## Data Flow
 
-### Run-once Setup Flow (prerequisite, idempotent)
+### Comparison Flow (v1.1)
 
 ```
-rumsey_manifest.json ──┐
-                       ├─► ingest_images: for each entry → GET image_url → PUT gs://.../data/<id>.jpg
-HF google/siglip2-... ─┴─► mirror_model: snapshot_download → PUT gs://.../models/siglip2-so400m-patch14-384/
-```
-
-### Single-Slice Flow (Phase 1 — the loop that must work)
-
-```
-manifest index N ──► manifest reader ──► entry{id}
-                                            │
-gs://.../models/ ──► model loader ──► SigLIP-2 + processor (GPU, eager attn)
-                                            │
-entry.id ──► data loader ──► GCS data/<id>.jpg ──► PIL ──► processor ──► img_tensor.requires_grad_()
-                                            │
-text query ────────────────────────────────┤
-                                            ▼
-                    attribution engine: model(img_tensor, query)
-                                  → similarity scalar logits_per_image[0,0]
-                                  → LRPEngine(params_to_interpret=[img_tensor]).run(scalar)
-                                  → per-patch relevance
-                                            ▼
-                    overlay: relevance → grid reshape → upsample → heatmap over PIL
-                                            ▼
-                    notebook cell: display(overlay)  ← human eyeballs it  [PHASE 1 DONE]
-```
-
-### Sweep Flow (v1 — adds breadth, reuses the same core)
-
-```
-config{ subset_count, query_set, start_index N }
-        │
+manifest[-1] (locked slice id)              QUERY (locked text, e.g. "a river")
+        │                                            │
+        └──────────────┬─────────────────────────────┘
+                        ▼
+        data_loader cached_image_path(id) → PIL   (GCS-miss disk cache; model-agnostic)
+                        │
+        ┌───────────────┴─── for adapter in REGISTRY ───────────────┐
+        ▼ (per model, sequential)                                    │
+  adapter.load()  ── cache-first GCS models/<id>/ → (model, processor)
         ▼
-sweep orchestrator:
-   for idx in range(N, N - subset_count, -1):          # count DOWN from high index
-       entry = manifest[idx]
-       for query in query_set:
-           try:
-               (relevance) = attribution_engine(entry.id, query)   # SAME core as single-slice
-               overlay = overlay(relevance, entry)
-               results.append((entry.id, query, overlay))
-           except Exception: log + continue              # one bad map ≠ dead sweep
-        │
+  adapter.build_inputs(pil, QUERY, processor, DEVICE)
+        → {pixel_values: TENSOR.requires_grad_(), ...}   ← identity origin
         ▼
-notebook cell: contact-sheet grid of all overlays      [v1 DONE]
+  attribution.attribute(adapter, model, inputs)   [ONE scope]
+     ├ adapter.forward(model, inputs)          → output
+     ├ adapter.attribution_target(output)      → query-conditioned scalar
+     ├ LRPEngine.params_to_interpret=[pixel_values]  ← SAME object
+     └ engine.run(target)                      → relevance (input-shaped)
+        ▼
+  overlay.to_patch_grid(relevance, adapter.patch_geometry())  → signed+mag grids
+        ▼
+  overlay.composite(ax, pil, …)                → one tile  (or except → "no heatmap")
+        ▼
+  del model; torch.cuda.empty_cache()          → free before next adapter
+        └───────────────────────────────────────────────────────────┘
+                        ▼
+        2×2 figure: SigLIP-2 | ViT | CLIP | PaliGemma   (eyeball comparison)
 ```
 
-**Key data flows:**
-1. **Tensor identity flow:** the *same* `img_tensor` object flows from data loader → model forward → `params_to_interpret`. Breaking this identity (e.g. cloning, re-tensoring between modules) breaks attribution. This is the single most important invariant in the system.
-2. **GCS-first flow:** nothing in the inner loop touches HF Hub or davidrumsey.com. After setup, all reads are from `gs://mapclass-training-northeast1` — the stability/reproducibility goal in PROJECT.md.
-3. **Sweep = single-slice in a loop:** the sweep adds *no new attribution logic*; it only iterates and collects. This is the core build-order lever.
+### State / lifecycle
+
+- **Model singletons keyed by `model_id`.** `model_loader` becomes `{model_id: (model, processor)}` (drop-in extension of the existing single global + lock). But four ~400M-class VLMs do **not** co-reside in L4 VRAM — SigLIP-2's *forward-only* peak alone was measured at 4.326 GB (01-03), and the dynamicLRP relevance pass retains forward activations on top (Pitfall E). The notebook loop must be **strictly sequential**: load → attribute → `del model` → `torch.cuda.empty_cache()` before the next adapter. Sequential load/free is a *required lifecycle*, not an optimization. (Implication: the per-model_id singleton cache mostly serves re-runs of the same model in one kernel; the loop deliberately evicts.)
+- **Coverage probe per model.** Run `LRPEngine.get_model_operations(target)` per adapter and print the op count as a recorded comparison artifact (v1.0 Cell-3 pattern, now inside the loop).
 
 ## Scaling Considerations
 
-"Scale" = maps × queries in a sweep on one GPU VM, not users.
+Single-user exploratory research piping on one GPU VM; "scale" = number of comparison models and VRAM, not users.
 
 | Scale | Architecture Adjustments |
 |-------|--------------------------|
-| 1 map × 1 query (Phase 1) | No adjustments. Load model once per kernel; everything inline. |
-| ~10 maps × ~5 queries (early v1) | Cache the loaded model singleton; cache GCS image downloads to local disk; reuse forward pass across queries for the same image if feasible. |
-| ~100+ maps × queries (larger v1 sweep) | Local disk image cache keyed by id; consider batching the vision forward; persist overlays to disk so notebook re-renders don't recompute LRP. LRP backward is the bottleneck — it is per-(image,query) and not trivially batchable. |
+| 4 models (v1.1 scope) | Sequential load → attribute → free per model; `try/except` per tile; one locked slice + one query. Fits L4 only if models are released between iterations. |
+| +models / +queries (future) | Registry already supports N adapters; wrap a query loop outside the model loop → N×M grid. No architectural change, pure iteration. |
+| Larger models | Bounded by `PROJECT.md` constraint (so400m-class ceiling for dynamic-LRP fidelity/overhead) and L4 VRAM — deliberately out of scope. |
 
 ### Scaling Priorities
 
-1. **First bottleneck — DynamicLRP backward pass per (image, query).** Operation-level relevance + Promise activation recovery on a 400M-param model is the dominant cost and is essentially serial per pair. Mitigate by: keeping the model fixed (already a PROJECT.md decision), caching nothing-changes results to disk, and keeping sweep subsets small (count down from N, stop early).
-2. **Second bottleneck — repeated GCS image downloads.** Cache to local VM disk on first fetch; the data loader checks local cache before GCS.
-3. **Non-bottleneck — model load.** Slow once per kernel; amortized via a module-level singleton. Do not reload per slice.
+1. **First bottleneck — VRAM with multiple resident models.** Fix: strictly sequential per-model load/free in the loop (`del model; torch.cuda.empty_cache()`); never hold two VLMs. The relevance pass also retains activations (Pitfall E) — free aggressively in a `finally`.
+2. **Second bottleneck — per-model GCS mirror cost on a cold VM.** Fix: `model_loader`'s existing size-checked cache-first download already handles this per-model; `mirror_model.py` just loops the registry repo ids once (idempotent skip-if-same-size, same pattern as the SigLIP-2 mirror).
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Splitting forward pass and LRP across module boundaries
+### Anti-Pattern 1: Letting the adapter own the `LRPEngine.run()` call
 
-**What people do:** A "model service" returns logits; a separate "attribution service" later tries to run LRP on them.
-**Why it's wrong:** DynamicLRP needs the live `grad_fn` graph and the exact `params_to_interpret` tensor object. Once the forward scope ends or tensors are detached/serialized, the graph is gone and attribution is impossible.
-**Do this instead:** The attribution engine owns forward + LRP in one function call, receiving the `requires_grad_()` input tensor and returning a finished relevance map.
+**What people do:** Put `forward + engine.run` inside each adapter for "encapsulation."
+**Why it's wrong:** The tensor-identity invariant requires the forward and `engine.run` in **one scope** with the *same* `pixel_values` object as `params_to_interpret`. Spreading it across the adapter boundary risks a scope close / re-`.to()` / clone that silently breaks graph traversal — the exact failure v1.0's `attribution.py` docstring (Pattern 2) warns about.
+**Do this instead:** Adapter supplies `forward()` and `attribution_target()` only; `attribution.attribute()` owns the engine and the one-scope discipline.
 
-### Anti-Pattern 2: Loading the model (or pulling from HF/Rumsey) inside the loop
+### Anti-Pattern 2: Re-hardcoding geometry in copied overlay code
 
-**What people do:** `from_pretrained(...)` or `requests.get(image_url)` inside the per-slice/per-sweep-iteration code.
-**Why it's wrong:** Re-pays multi-GB load / network latency every iteration; reintroduces the HF/Rumsey runtime dependency the GCS mirror exists to remove (PROJECT.md key decision).
-**Do this instead:** Run-once idempotent ingestion/mirror scripts; cached singleton model loader; data loader reads only from GCS (+ local disk cache).
+**What people do:** Copy `overlay.py` to `overlay_clip.py` with `GRID=14`.
+**Why it's wrong:** Duplicates the load-bearing D-09 signed-relevance / zero-centered `TwoSlopeNorm` logic; a fix to the signed-rendering invariant would have to be applied N times and will drift.
+**Do this instead:** One `overlay.py`, geometry injected via `PatchGeometry`. The D-09 reduction is identical across models; only `grid/patch/valid_dim` differ.
 
-### Anti-Pattern 3: Building the sweep before the single slice is visually trusted
+### Anti-Pattern 3: A query-independent attribution target on the text-less ViT
 
-**What people do:** Generalize to N×Q sweep + contact sheet before one (map, query) attribution has been eyeballed and judged correct.
-**Why it's wrong:** If SigLIP-2↔DynamicLRP integration is subtly wrong, a sweep produces 100 plausible-looking-but-wrong heatmaps and hides the bug. PROJECT.md explicitly gates Phase 1 on eyeballing one slice.
-**Do this instead:** Single-slice must be visually judged correct first; the sweep then wraps the *unchanged* core in a loop.
+**What people do:** For the plain ViT (no text encoder), attribute the pooled image embedding or its norm.
+**Why it's wrong:** That yields image-saliency, not a *query-conditioned* map — it breaks cross-model comparability (every other tile answers "where is the query") and is exactly the Pitfall B that v1.0's `attribution.py` forbids by grep.
+**Do this instead:** Map the query string to the nearest ViT class logit (ImageNet class, or a fixed agreed class for the locked query) and attribute *that* logit. Record the query→class mapping as a documented adapter decision so the ViT tile stays query-conditioned and comparable.
 
-### Anti-Pattern 4: Re-deriving / re-implementing dynamic LRP from the paper
+### Anti-Pattern 4: Patching vendored dynamicLRP to make a model "work"
 
-**What people do:** Reimplement relevance propagation instead of using keeinlev/dynamicLRP.
-**Why it's wrong:** PROJECT.md explicitly adopts the reference impl to avoid re-deriving from the paper; reimplementation is enormous scope and the project's stated bet is "less work."
-**Do this instead:** Vendor + pin keeinlev/dynamicLRP; treat SigLIP-2 adaptation as a thin `model_specific` shim if needed, not a rewrite.
+**What people do:** Add a custom Promise so PaliGemma/CLIP traverses cleanly.
+**Why it's wrong:** `PROJECT.md` Key Decisions and 01-03-SUMMARY record that the entire Fallback Ladder was **explicitly declined** — a model the engine cannot traverse is *the recorded comparison result*. Patching defeats the deliverable and breaks `VENDOR_SHA` provenance (threat T-01-SC3).
+**Do this instead:** Catch the engine error per model, render the "no heatmap" tile with the op-coverage finding, move on. The negative result is data.
 
 ## Integration Points
 
@@ -221,42 +305,43 @@ notebook cell: contact-sheet grid of all overlays      [v1 DONE]
 
 | Service | Integration Pattern | Notes |
 |---------|---------------------|-------|
-| Google Cloud Storage (`mapclass-training-northeast1`) | `google-cloud-storage` SDK via ADC on the VM | Only persistence layer. data/ and models/ prefixes. Idempotent writes (skip-if-exists) for ingestion/mirror. |
-| HuggingFace Hub (`google/siglip2-so400m-patch14-384`) | `huggingface_hub.snapshot_download`, **setup-only** | Touched once by mirror_model; never in the loop. |
-| davidrumsey.com (`image_url` per entry) | `requests` GET, **setup-only** | Touched once by ingest_images; public URLs; expect some failures → log & continue, never block the loop. |
-| keeinlev/dynamicLRP (master) | **Vendored** into `third_party/`, commit-pinned, imported as `lrp_engine` | Research code, no PyPI release, Jupyter-Notebook repo. Pin to insulate the load-bearing dep. |
+| GCS `models/<id>/` | Per-model cache-first download (extend `model_loader._download_model_mirror` to a model_id-keyed prefix) | One subdir per model id; `mirror_model.py` loops registry repo ids; idempotent size-check skip already implemented |
+| GCS `data/` (Rumsey images) | Unchanged — `data_loader._cached_image_path` | Model-agnostic; the locked slice image is loaded once and reused across all 4 adapters |
+| HuggingFace Hub | Only at mirror time (`mirror_model.snapshot_download` per repo id); never at runtime | Reproducibility (Pitfall G) — runtime loads strictly from GCS |
+| dynamicLRP (vendored, SHA-pinned) | In-process autograd traversal via `LRPEngine`; unchanged | Coverage gaps per model are recorded results, never engine patches (Fallback Ladder declined) |
 
 ### Internal Boundaries
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| manifest reader ↔ orchestrator | Direct call: index → entry dict | Index semantics: higher = richer; sweep counts DOWN from N. |
-| data loader ↔ attribution engine | Direct call: returns `(img_tensor.requires_grad_(), pil_image)` | Tensor identity must be preserved into both forward and `params_to_interpret`. |
-| model loader ↔ attribution engine | Direct call: cached singleton model+processor | Loaded once per kernel; eager attention. |
-| attribution engine ↔ overlay | Direct call: per-patch relevance array + source PIL | Overlay owns reshape/upsample/colormap; engine owns nothing visual. |
-| orchestrator ↔ {data loader, attribution, overlay} | Direct calls in a loop; per-item try/except | Sweep adds iteration only; zero new attribution logic. |
+| Boundary | Communication | Considerations |
+|----------|---------------|----------------|
+| notebook ↔ `adapters/registry` | Import ordered list, iterate | Order is the comparison contract: SigLIP-2 → ViT → CLIP → PaliGemma |
+| adapter ↔ `data_loader` | `data_loader` returns PIL; adapter does `build_inputs` (processor/tokenize) | Splits image IO (generic, reused) from tokenization (model-specific, moved into adapter) |
+| `attribution.attribute` ↔ adapter | Calls `adapter.forward` + `adapter.attribution_target`; owns `engine.run` | One-scope identity invariant lives here, not in the adapter |
+| `overlay` ↔ adapter | `adapter.patch_geometry()` → `PatchGeometry` passed to `to_patch_grid`/`composite` | D-09 signed/zero-centered rendering invariant unchanged; only dimensions parameterized |
+| `attribution` ↔ vendored engine | `engine.params_to_interpret=[pixel_values]`; `engine.run(target)` | `params_to_interpret` resolved by tensor object identity in `make_graph_iter` — the invariant's root cause |
 
-## Suggested Build Order (for the roadmap)
+## Suggested Build Order
 
-Dependency-ordered. Phase 1 = the slice that must work; v1 = the sweep wrapped around it.
+Dependency-driven; each step independently verifiable and respects both load-bearing invariants.
 
-1. **De-risk spike (start of Phase 1):** vendor+pin dynamicLRP; reproduce its `ViT.ipynb` end-to-end to confirm the toolchain works on the VM. *Gate: ViT heatmap reproduced.*
-2. **Setup scripts (parallelizable, prerequisites):** `mirror_model` (HF→GCS), `ingest_images` (manifest→GCS). Idempotent. *Gate: model + at least the high-index map images present in GCS.*
-3. **Loaders:** `manifest`, `model_loader` (GCS→model), `data_loader` (id→requires_grad tensor). *Gate: a high-index map loads as a tensor + PIL from GCS.*
-4. **Attribution engine — the risk:** SigLIP-2 forward → similarity scalar → DynamicLRP → relevance. Adapt the ViT pattern to the dual-encoder target; add a `model_specific` shim only if op coverage fails. *Gate: relevance array returned without graph errors.*
-5. **Overlay + single-slice notebook:** reshape→upsample→composite; `01_single_slice.ipynb`. *Gate: human eyeballs one (map, query) overlay and judges it — **PHASE 1 DONE**.*
-6. **Sweep + contact-sheet notebook:** `sweep.py` wrapping the unchanged core; count down from N; per-item try/except; `02_sweep.ipynb` grid. *Gate: configurable subset × queries browsable — **v1 DONE**.*
+1. **Adapter contract first** — `adapters/base.py` (`ModelAdapter` Protocol + `PatchGeometry`) + `registry.py` skeleton + `test_adapters.py`. Unit-test that a trivial fake adapter satisfies the protocol and `PatchGeometry(14,384).grid==27`, `.edge_discard==6` (locks the SigLIP numbers the v1.0 tests assert). No model yet. *Verify: tests pass, zero behavior change to v1.0.*
+2. **Parameterize `overlay.py` by `PatchGeometry`; rework `attribution.py` to take an adapter.** Keep SigLIP numbers as the default-equivalent; parametrize `test_overlay_grid.py` over geometry. *Verify: existing 16 unit tests still pass with geometry injected.*
+3. **SigLIP-2 adapter (extract v1.0 logic verbatim).** Wrap the exact v1.0 `model_loader`/`data_loader`/`logits_per_image[0,0]` path behind the adapter. Re-run `01_single_slice` semantics through it — it must reproduce the *same recorded op-coverage finding* (no heatmap, caught `RuntimeError`). This proves the seam is behavior-preserving on the one model fully understood. *Verify: same finding as 01-03 (regression oracle).*
+4. **ViT adapter (simplest new model; no text path).** Mirror a small ViT to GCS; implement the query→class-logit target. Plain transformer, no MAP-pool `split_with_sizes` → most likely to traverse cleanly → first *positive* heatmap, validating the parameterized overlay end-to-end with non-SigLIP geometry. *Verify: a rendered heatmap tile + coverage artifact.*
+5. **CLIP adapter (contrastive like SigLIP-2 but different head/geometry).** `logits_per_image[0,0]` target, CLIP patch geometry. Tests whether dynamicLRP traverses CLIP's pooling — a real comparison datum either way. *Verify: heatmap or recorded "no heatmap" finding.*
+6. **PaliGemma adapter (hardest: generative VLM, non-contrastive target).** Query-conditioned target = answer-token logit. Highest op-coverage risk (generative decoder); a recorded finding is acceptable per `PROJECT.md`. *Verify: heatmap or recorded finding, harness does not crash.*
+7. **`mirror_model.py` + `config.py` registry, then `notebooks/02_multimodel.ipynb` last.** Generalize the mirror loop / config map incrementally alongside 4–6 (each model needs weights). Build the comparison notebook *last* via a `_build_02_multimodel.py` generator (mirror the v1.0 `_build_01` pattern: script is source of truth, ipynb is the committed artifact, headless nbconvert verifies 0 cell errors and ≥4 tiles). *Verify: notebook runs end-to-end exit 0, 2×2 grid renders, failed models show "no heatmap" tiles not tracebacks — milestone done.*
 
-Phase 1 needs steps 1–5 (single tensor through the whole pipe). v1 adds only step 6 — pure orchestration/iteration over the proven core, no new attribution logic.
+**Why this order:** The contract and the two invariant-bearing modules (`overlay`, `attribution`) must be generalized before any model can plug in (steps 1–2). SigLIP-2 first (step 3) because it is the *only* model whose end-to-end behavior is already known (the recorded negative finding) — it is the regression oracle proving the seam preserves behavior. ViT before CLIP/PaliGemma (steps 4→6) ascends difficulty: text-less plain transformer → contrastive-with-different-head → generative VLM, so the first *positive* heatmap (validating the parameterized overlay) arrives as early as possible. The notebook is last because it only composes already-verified parts and is the milestone's done-gate.
 
 ## Sources
 
-- keeinlev/dynamicLRP repository tree, `master` branch (`src/lrp_engine/lrp.py`, `src/lrp_engine/__init__.py`, `src/experiments/ViT.ipynb`, `src/lrp_engine/model_specific/mosaicbert.py`, `README.md`) — HIGH confidence on the integration mechanism. https://github.com/keeinlev/dynamicLRP
-- "Always Keep Your Promises: A Model-Agnostic Attribution Algorithm for Neural Networks", arXiv 2512.07010 (v4) — HIGH on the Promise System / op-level autograd-graph approach; coverage claims do not include SigLIP-2. https://arxiv.org/html/2512.07010v4
-- HuggingFace Transformers SigLIP2 model docs (`Siglip2Model`, `logits_per_image`/`logits_per_text`, `attn_implementation` configurable) — HIGH. https://huggingface.co/docs/transformers/model_doc/siglip2
-- `google/siglip2-so400m-patch14-384` model card — MEDIUM (checkpoint uses SiglipVisionTransformer / Conv2d patch embedding). https://huggingface.co/google/siglip2-so400m-patch14-384
-- Project inputs: `.planning/PROJECT.md`, `README.md`, `metadata/rumsey_manifest.json` (entry shape, GCS layout, count-down-from-N index semantics) — HIGH (authoritative project constraints).
+- `src/mapclass/{attribution,overlay,data_loader,model_loader,config,manifest,mirror_model}.py` — read directly 2026-05-19 — HIGH (the authoritative current architecture; the four SigLIP hard-wire points and the two invariants are quoted from these docstrings)
+- `third_party/dynamicLRP/src/lrp_engine/lrp.py` (`LRPEngine.__init__`, `run`, `get_model_operations`, `make_graph_iter(root_nodes, params_to_interpret, …)`) — read directly — HIGH (confirms `params_to_interpret` resolved by tensor identity — the invariant's mechanism; confirms `run()` accepts tensor or tuple[tensor])
+- `.planning/PROJECT.md` (v1.1 goal, Key Decisions: Fallback Ladder declined, per-model gap = recorded result, model + query are the only knobs) — HIGH
+- `.planning/archive/v1.0-milestone/.../01-03-SUMMARY.md` + `01-03-PLAN.md` — HIGH (SigLIP-2 `split_with_sizes` op-coverage finding; D-09 signed-overlay invariant; 4.326 GB forward VRAM; the "caught-finding cell" notebook pattern)
+- `notebooks/_build_01_single_slice.py` — read directly — HIGH (the generator pattern the v1.1 notebook should mirror)
 
 ---
-*Architecture research for: dynamic-LRP map-attribution pipeline on SigLIP-2 (GCS + JupyterLab on GCP VM)*
-*Researched: 2026-05-18*
+*Architecture research for: multi-model dynamic-LRP attribution comparison harness (v1.1)*
+*Researched: 2026-05-19*

@@ -1,198 +1,196 @@
 # Stack Research
 
-**Domain:** Research/exploration pipeline — dynamic LRP attribution on a pre-trained vision-language model (SigLIP-2) for query-driven pixel-level heatmaps over historical map images, run on a remote GCP GPU VM, inspected in JupyterLab
-**Researched:** 2026-05-18
-**Confidence:** HIGH (LRP repo inspected directly; all version pins verified against PyPI and the repo's own `requirements.txt`)
+**Domain:** Adding CLIP, PaliGemma, and a plain ViT as comparison models for cross-model dynamic-LRP attribution, under a FROZEN transformers==4.52.3 / torch==2.7.1 / vendored-dynamicLRP stack (MapClass v1.1)
+**Researched:** 2026-05-19
+**Confidence:** HIGH on model ids / transformers classes / gating / attribution targets (verified against transformers v4.52.3 docs + HF model cards); MEDIUM on exact parameter counts; the dynamic-LRP op-coverage outcome per model is intentionally UNKNOWN (it is the data v1.1 produces, not a thing to pre-resolve).
+
+> Supersedes the 2026-05-18 v1.0 SigLIP-2-only stack research. The v1.0 pins
+> (torch==2.7.1+cu126, torchvision==0.22.1, transformers==4.52.3, vendored
+> dynamicLRP @ SHA 405e7424…, google-cloud-storage, JupyterLab) are FROZEN and
+> NOT re-researched here. This document covers ONLY the v1.1 model additions.
 
 ## Executive Finding (read this first)
 
-The load-bearing dependency `keeinlev/dynamicLRP` is **PyTorch, operation-level, and genuinely model-agnostic**. It does NOT have model-specific code for ViT/CLIP/SigLIP — it walks the PyTorch autograd graph of *any* model output tensor and applies LRP rules per tensor-op. The arXiv paper claims 99.92% node coverage across 15 architectures "with no architecture-specific code." This is the single most important fact: **adapting it to SigLIP-2 is expected to be a wiring exercise, not a re-derivation.**
+**No stack pins change. No new hard dependency is required for CLIP or ViT.** Both
+`CLIPModel`/`CLIPProcessor` and `ViTForImageClassification`/`ViTImageProcessor` are
+native to transformers 4.52.3 and load with the existing torch 2.7.1 stack and the
+existing `huggingface_hub` (transitive) + `google-cloud-storage` mirror path — the
+exact same code shape already shipped for SigLIP-2.
 
-Crucially, the LRP repo's own `requirements.txt` pins **`transformers==4.52.3`**, and SigLIP-2 requires `transformers >= 4.49.0`. **The LRP repo's pinned transformers version already supports SigLIP-2.** There is no version conflict between the two central dependencies. The entire stack should be pinned to the LRP repo's `requirements.txt` and built outward from it, because that repo is the constraint that everything else must satisfy.
+**PaliGemma is the one that carries cost and risk:**
+1. **Gated weights** — every `google/paligemma*` repo requires accepting Google's
+   Gemma license while logged into a Hugging Face account *before* the weights can
+   be downloaded (even though the repo is "publicly listed"). The v1.0 mirror step
+   used an anonymous `snapshot_download`; PaliGemma needs an authenticated HF token
+   on the (one-time) mirror VM. Once mirrored to GCS this is moot — the runtime
+   loader reads GCS, not HF — but the **mirror step must be run with an HF token
+   tied to an account that has accepted the Gemma terms**, and the GCS bucket then
+   holds Gemma-licensed weights (a license/redistribution consideration to flag,
+   not a blocker for a private single-researcher bucket).
+2. **Size** — the smallest PaliGemma is **~3B params**, ~7.5× the SigLIP-2-so400m
+   (~400M) dynamic-LRP fidelity ceiling stated in PROJECT.md/CLAUDE.md. It is
+   included because the *comparison* is the point (a model the engine cannot
+   traverse, or that blows VRAM, is a recorded result), but it should be loaded in
+   `bf16` and the LRP relevance pass on a 3B generative decoder may exceed the L4's
+   24 GB — that is itself a recordable comparison datum, consistent with the
+   "coverage gap = result, not bug" decision.
+3. **Different attribution target** — PaliGemma is generative; there is no
+   `logits_per_image`. The query-conditioned target is the **logit of the answer
+   token** at the generated position (`logits[0, answer_pos, answer_token_id]`),
+   which is a genuinely different attribution wiring from CLIP/SigLIP-2 and must be
+   implemented per-model in the adapter.
 
-The concrete usage pattern is proven in the repo's own `src/experiments/ViT.ipynb`: load an HF transformers model → forward pass → `LRPEngine(...).run(output.logits)` with `params_to_interpret = [input_image_tensor]` → relevance tensor → reshape to patch grid → overlay with matplotlib. For SigLIP-2 the only substantive change is using `logits_per_image` (the image–text similarity scalar) as the attribution target instead of a classifier logit — which is exactly what makes attribution *query-driven*.
+**Plain ViT is NOT image-text.** `google/vit-base-patch16-224` has no text tower
+and no `logits_per_image`. Its only query-conditionable scalar is an **ImageNet
+class logit** (`logits[0, class_id]`). The notebook's free-text query ("a river")
+cannot condition a plain ViT the way it conditions CLIP/SigLIP-2 — this asymmetry
+must be flagged in the adapter and the side-by-side UI (e.g. map the text query to
+the nearest ImageNet class, or fix a class, and label the ViT panel as
+"class-conditioned, not text-conditioned"). This is a genuine semantic caveat, not
+an implementation detail.
 
 ## Recommended Stack
 
-### Core Technologies
+### Core Technologies (additions for v1.1 — all already satisfiable under the frozen pins)
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Python | 3.11 (3.10–3.12 OK) | Runtime | torch 2.7.1 + transformers 4.52.3 both support 3.10–3.12; 3.11 is the safe middle. Avoid 3.13 (wheel coverage for the pinned torch was incomplete at that version). |
-| PyTorch (`torch`) | **2.7.1** (pinned by LRP repo) | DL framework; autograd graph that dynamicLRP traverses | Hard pin from `keeinlev/dynamicLRP/requirements.txt`. dynamicLRP runs *on the autograd graph*; a torch version mismatch risks autograd Node-name / graph-shape drift that breaks the engine. Do not float this. |
-| `transformers` | **4.52.3** (pinned by LRP repo) | Loads SigLIP-2 (`Siglip2Model`/`AutoModel`, `AutoProcessor`) and provides `logits_per_image` | Pinned by LRP repo AND satisfies SigLIP-2's `>=4.49.0` requirement. Verified: SigLIP-2 landed in transformers v4.49.0-SigLIP-2 tag; 4.52.3 includes the `siglip2` model. |
-| `keeinlev/dynamicLRP` | git clone @ `master` (commit pinned; pushed 2026-05-06) | The dynamic LRP engine (`LRPEngine`) | The whole project premise. No PyPI package, no `setup.py`/`pyproject.toml` — install by cloning and importing from `src/lrp_engine/`. |
-| SigLIP-2 weights | `google/siglip2-so400m-patch14-384` | The pre-trained VLM under attribution | Fixed by PROJECT.md. Fixed-resolution variant → usable via `AutoModel`/`SiglipModel`; exposes `logits_per_image` directly (the query-driven attribution target). ~400M params — within the LRP fidelity ceiling stated in PROJECT.md. |
-| `google-cloud-storage` | 3.x (latest 3.10.1; pin `>=3.0,<4`) | Mirror Rumsey images + SigLIP-2 weights to/from `gs://mapclass-training-northeast1` | Official GCP Python client; uses the VM's ADC credentials (already present per PROJECT.md). Idiomatic for blob up/download with no extra auth code. |
-| JupyterLab | 4.x (latest 4.5.7; pin `>=4.4,<5`) | Human inspection surface (SSH-tunnelled) | Already the chosen inspection tool (README). 4.x is the current line and matches the README's `jupyter lab` invocation. |
+| `CLIPModel` + `CLIPProcessor` (transformers) | from `transformers==4.52.3` (no change) | CLIP comparison model: contrastive image-text, exposes `logits_per_image` | Native to 4.52.3; `logits_per_image` is the *exact same* query-conditioned target already used for SigLIP-2 — the v1.0 `attribute()` path applies almost verbatim. `[VERIFIED: HF transformers v4.52.3 CLIP docs — CLIPModel/CLIPProcessor, logits_per_image shape (image_bs, text_bs)]` |
+| `openai/clip-vit-large-patch14` weights | HF snapshot → GCS mirror | The CLIP checkpoint under attribution | ViT-L/14 vision tower (~304M vision params, ~428M total) — the closest CLIP to the SigLIP-2-so400m (~400M) fidelity ceiling without exceeding it. Patch 14 / image 224 → 16×16=256 patch grid. CLIP uses a CLS token (NO MAP-pool `split_with_sizes`, *unlike* SigLIP-2) → a deliberately different LRP path = a real comparison datum. NOT gated. `[VERIFIED: HF model card openai/clip-vit-large-patch14; transformers CLIP docs default image_size 224]` |
+| `ViTForImageClassification` + `ViTImageProcessor` (transformers) | from `transformers==4.52.3` (no change) | Plain-ViT comparison model: image classifier, exposes class `logits` | Native to 4.52.3; this is the architecture closest to dynamicLRP's own verified `ViT.ipynb` example — highest a-priori chance the engine traverses it cleanly, making it the cross-model "engine works at all" control. `[VERIFIED: HF transformers v4.52.3 ViT docs — ViTForImageClassification, logits shape (batch, num_labels)]` |
+| `google/vit-base-patch16-224` weights | HF snapshot → GCS mirror | The plain-ViT checkpoint under attribution | ~86M params (well under the ceiling), patch 16 / image 224 → 14×14=196 patches + 1 CLS = 197 tokens; ImageNet-1k head (`num_labels=1000`). Matches the dynamicLRP paper's ViT family. NOT gated. `[VERIFIED: HF transformers v4.52.3 ViT docs — patch 16, image 224, 12 layers, hidden 768, 197 tokens]` |
+| `PaliGemmaForConditionalGeneration` + `PaliGemmaProcessor` (transformers) | from `transformers==4.52.3` (no change) | PaliGemma comparison model: generative VLM, exposes vocab `logits` | Native to 4.52.3 (both `paligemma` and `paligemma2` model types are present in 4.52.3 — verified). Generative → attribution target = logit of the answer token, a deliberately different wiring. `[VERIFIED: HF transformers v4.52.3 PaliGemma docs — PaliGemmaForConditionalGeneration, logits shape (batch, seq_len, vocab_size); PaliGemma2 supported in 4.52.3]` |
+| `google/paligemma2-3b-pt-224` weights | **authenticated** HF snapshot (Gemma-license-accepted token) → GCS mirror | The PaliGemma checkpoint under attribution | Smallest PaliGemma family member (~3B). 224-res `pt` variant keeps the image grid small (224/14=16 → 256 image tokens) to bound the LRP graph. **GATED**: requires HF login + accepted Gemma terms to download (one-time mirror only). `[VERIFIED: HF model card google/paligemma2-3b-pt-224 — "you have to accept the conditions to access its files", Gemma license, 3B params]` |
 
-### Supporting Libraries
+### Supporting Libraries (dependency delta — what must / must not be added)
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `einops` | 0.8.1 (LRP pin) | Tensor reshaping inside dynamicLRP | Required transitively by dynamicLRP. Install at its pin. |
-| `timm` | 1.0.20 (LRP pin) | Vision backbones used by dynamicLRP experiments | Required by dynamicLRP `requirements.txt`. Install even if SigLIP-2 doesn't need it — the engine imports may assume the full requirements set. |
-| `scikit-learn` | 1.7.0 (LRP pin) | Metrics in dynamicLRP experiment code | Transitive LRP dependency. Pin to avoid import-time surprises. |
-| `omegaconf` | 2.3.0 (LRP pin) | Config objects in dynamicLRP | Transitive LRP dependency. |
-| `tqdm` | 4.66.4 (LRP pin) | Progress bars (LRP + your sweep loop) | Reuse for the maps×queries sweep. |
-| `captum` | unpinned by LRP (`captum`) → use `>=0.7,<0.9` | Baseline attributions inside dynamicLRP | LRP repo lists it unpinned; pin yourself to a recent stable to avoid resolver pulling something incompatible with torch 2.7.1. |
-| `datasets` | unpinned by LRP (`datasets`) → use `>=2.19,<3` or `>=3,<4` | HF datasets in LRP experiments | LRP lists it unpinned. Not needed for the core loop (you load maps from GCS, not HF datasets) but it's an LRP import — pin conservatively. |
-| `matplotlib` | 3.8.0 (LRP pin) | Heatmap rendering / overlay in the notebook | Pinned by LRP repo; also your primary visualization tool. The ViT notebook uses `plt.imshow` for the relevance map — overlay the map RGB with a semi-transparent `cmap` relevance map. |
-| `seaborn` | 0.13.2 (LRP pin) | Optional nicer plotting | Transitive LRP pin; available for contact-sheet styling. |
-| `Pillow` (PIL) | `>=10.3,<12` | Read/resize Rumsey JPEGs before the SigLIP processor | Standard image IO; `AutoProcessor` for SigLIP-2 consumes PIL images. Already a transitive dep of torchvision/transformers; pin explicitly for clarity. |
-| `torchvision` | matched to torch 2.7.1 → `0.22.1` | Image tensor transforms (the ViT notebook uses `torchvision.transforms`) | Must match torch exactly (torchvision 0.22.x ↔ torch 2.7.x). A mismatch here is a classic silent breakage. |
-| `numpy` | `<2.3`, let torch/transformers resolve (likely 1.26.x or 2.x) | Array glue between relevance tensors and matplotlib | Do not hard-pin blindly; let the torch 2.7.1 wheel constrain it. NumPy 2.x is fine with torch 2.7.1. |
-| `accelerate` | `>=0.30,<2` | Convenience for `device_map`/dtype when loading SigLIP-2 | Optional but smooths `from_pretrained(..., device_map="auto")`. Not strictly required for a single-GPU VM. |
-| `ipywidgets` | `>=8.1,<9` | Interactive contact-sheet browsing in JupyterLab | For the v1 "browse all attribution maps" requirement; works with JupyterLab 4.x out of the box. |
+| `huggingface_hub` (already transitive of `transformers==4.52.3`) | unchanged — do NOT pin/upgrade separately | `snapshot_download(..., token=...)` for the gated PaliGemma mirror; anonymous for CLIP/ViT | Already used for the v1.0 SigLIP-2 mirror. For PaliGemma, pass an HF token (env `HF_TOKEN`) on the **one-time mirror VM only**; runtime never touches HF. No version bump — use whatever `transformers==4.52.3` already resolved. |
+| `sentencepiece` | **NOT required** — do not add | (would be the Gemma tokenizer backend) | transformers 4.52.3's `PaliGemmaProcessor` uses `GemmaTokenizerFast` (Rust/`tokenizers`-backed, already a transformers transitive dep). Adding `sentencepiece` is unnecessary and risks pulling a build the frozen resolve did not vet. `[VERIFIED: HF transformers v4.52.3 PaliGemma docs — PaliGemmaProcessor wraps GemmaTokenizerFast]` |
+| `accelerate` | **OPTIONAL**, only if added: `>=0.26,<1.1` | Enables `device_map="auto"` / low-mem sharded load for the 3B PaliGemma | NOT required: a single-GPU L4 can `.to("cuda")` the 3B bf16 model with a plain `from_pretrained(...).to(device)`, exactly like v1.0's SigLIP-2 loader. Add `accelerate` ONLY if the 3B load OOMs host RAM during materialization; pin conservatively so the resolver cannot disturb `torch==2.7.1`/`transformers==4.52.3`. Fallback, not a baseline addition. |
+| `google-cloud-storage` (already pinned `>=3.0,<4`) | unchanged | Mirror the 3 new model snapshots to `gs://mapclass-training-northeast1/models/` exactly like SigLIP-2 | Reuse the v1.0 `mirror_model.py` recursive-upload pattern verbatim; only the repo id (and, for PaliGemma, the auth token) changes. |
+
+**Net dependency delta: ZERO new hard requirements.** CLIP and ViT add no
+packages. PaliGemma adds no *runtime* package; it adds an *operational* requirement
+(an HF token with Gemma terms accepted, used once at mirror time). `accelerate` is a
+conditional fallback only. `requirements.txt` is UNCHANGED.
 
 ### Development Tools
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| `venv` + `pip` | Environment isolation | README already prescribes `python3 -m venv .venv` + `requirements.txt`. Keep this; do not introduce conda/poetry/uv mid-stream — the LRP repo assumes plain pip. |
-| `ipykernel` | Register the venv kernel for JupyterLab | README already does `ipykernel install --name mapclass`. Keep. |
-| `gcloud` CLI / ADC | GCS auth on the VM | Already present per PROJECT.md; `google-cloud-storage` picks up ADC automatically. No service-account JSON juggling needed. |
-| Git submodule **or** vendored clone of dynamicLRP | Pin the LRP engine reproducibly | Recommended: add dynamicLRP as a git submodule pinned to a specific commit, or vendor `src/lrp_engine/` with the source commit recorded. `pip install git+...` will NOT work (no packaging metadata). |
+| `HF_TOKEN` env var (mirror VM only) | Authenticate the one-time PaliGemma `snapshot_download` | Required because PaliGemma repos are gated. The account behind the token must have visited the model page and accepted the Gemma license once. Never needed at runtime (GCS-only loaders). Do NOT commit the token; do NOT bake it into the GCS-loaded model dir. |
+| existing `mirror_model.py` (v1.0) | Recursive HF-snapshot → GCS upload | Generalize to `(repo_id, gcs_prefix, token=None)`; CLIP/ViT pass `token=None`, PaliGemma passes the env token. Idempotent skip-if-exists logic unchanged. |
+| existing `model_loader.py` (v1.0) | GCS → local → `from_pretrained` | Generalize to dispatch on model id → correct class (`AutoModel`/`CLIPModel`/`ViTForImageClassification`/`PaliGemmaForConditionalGeneration` + matching processor). The model-agnostic adapter is a v1.1 feature, not a stack concern. |
 
 ## Installation
 
 ```bash
-# 0. System: Python 3.11, NVIDIA driver + CUDA matching torch 2.7.1 cu wheels (cu126/cu128)
-python3.11 -m venv .venv
-.venv/bin/pip install --upgrade pip
+# NOTHING TO INSTALL for CLIP or ViT — both are in the already-frozen
+# transformers==4.52.3.  requirements.txt is UNCHANGED.
 
-# 1. Clone the load-bearing dependency (NO pip package exists)
-git clone https://github.com/keeinlev/dynamicLRP.git external/dynamicLRP
-# pin it: cd external/dynamicLRP && git checkout <commit-from-2026-05-06> && cd -
-# Engine import path: external/dynamicLRP/src/lrp_engine  (sys.path.append in notebook)
+# One-time PaliGemma mirror (on the mirror VM only — NOT a dependency change):
+#   1. Accept Gemma terms at https://huggingface.co/google/paligemma2-3b-pt-224 (web, once)
+#   2. export HF_TOKEN=hf_xxx   # account that accepted the terms
+#   3. run the (generalized) mirror_model.py for the three new repo ids:
+#        openai/clip-vit-large-patch14        (token=None)
+#        google/vit-base-patch16-224          (token=None)
+#        google/paligemma2-3b-pt-224          (token=$HF_TOKEN)
+#   -> uploads to gs://mapclass-training-northeast1/models/<repo_basename>/
 
-# 2. Core stack — MIRROR dynamicLRP/requirements.txt pins exactly, then add ours
-.venv/bin/pip install \
-  torch==2.7.1 torchvision==0.22.1 \
-  transformers==4.52.3 \
-  einops==0.8.1 scikit_learn==1.7.0 tqdm==4.66.4 \
-  omegaconf==2.3.0 matplotlib==3.8.0 seaborn==0.13.2 timm==1.0.20 \
-  "datasets>=3,<4" "captum>=0.7,<0.9"
-
-# 3. Project-specific additions
-.venv/bin/pip install \
-  "google-cloud-storage>=3.0,<4" \
-  "jupyterlab>=4.4,<5" "ipywidgets>=8.1,<9" \
-  "Pillow>=10.3,<12" "accelerate>=0.30,<2"
-
-# 4. Kernel registration (per README)
-.venv/bin/python -m ipykernel install --user --name mapclass --display-name "mapclass (.venv)"
+# OPTIONAL fallback ONLY if the 3B PaliGemma OOMs host RAM at load:
+#   pip install 'accelerate>=0.26,<1.1'   # gate behind a human-verify checkpoint;
+#   confirm `pip` does NOT propose torch/transformers changes before accepting.
 ```
 
-> Generate the canonical `requirements.txt` by literally copying `external/dynamicLRP/requirements.txt`
-> and appending the project-specific lines, so the two never drift.
+## Per-Model Attribution Target (the load-bearing ambiguity to flag)
 
-## SigLIP-2 + dynamicLRP integration sketch (verified pattern from repo's ViT.ipynb)
-
-```python
-import sys; sys.path.append("external/dynamicLRP/src")
-import torch
-from transformers import AutoModel, AutoProcessor
-from lrp_engine import LRPEngine            # from external/dynamicLRP/src/lrp_engine
-
-model = AutoModel.from_pretrained("google/siglip2-so400m-patch14-384").eval().to("cuda")
-proc  = AutoProcessor.from_pretrained("google/siglip2-so400m-patch14-384")
-
-inputs = proc(images=[map_img], text=[query], return_tensors="pt",
-              padding="max_length").to("cuda")
-inputs["pixel_values"].requires_grad_()           # attribution target input
-
-out = model(**inputs)                              # out.logits_per_image : [1,1]
-lrp = LRPEngine(use_gamma=True, no_recompile=True) # same knobs as ViT.ipynb
-lrp.params_to_interpret = [inputs["pixel_values"]]
-checkpoint_rels, param_rels = lrp.run(out.logits_per_image)   # query-driven
-
-# param_rels[pixel_values] -> reshape to patch grid (384/14 ≈ 27x27) -> upsample
-# -> matplotlib overlay on the original map (alpha-blended cmap)
-```
-
-**Adaptation risk (the central technical risk per PROJECT.md):** the engine is model-agnostic
-at the *op* level, but SigLIP-2's graph (sigmoid loss head, attention pooling head, patch
-embedding conv) may exercise tensor ops or autograd Node patterns not yet covered by the 47
-implemented rules / promise handlers. The repo provides `LRPEngine.get_model_operations(out)`
-to enumerate the model's autograd Node set *before* running — use it first to detect any
-uncovered op. This is the spot most likely to need a custom promise/rule. Flag the
-SigLIP-2-bring-up phase for deeper, hands-on research.
+| Model | transformers class | Query-conditioned target | Same as SigLIP-2? | Flag |
+|-------|--------------------|--------------------------|-------------------|------|
+| SigLIP-2 (v1.0, shipped) | `AutoModel`/`SiglipModel` | `output.logits_per_image[0,0]` | — (reference) | Known: engine does NOT cover its `split_with_sizes` MAP-pool op (recorded result) |
+| CLIP | `CLIPModel` | `output.logits_per_image[0,0]` | **YES — verbatim** | Different head from SigLIP-2 (CLIP has a CLS token + projection, no MAP-pool `split_with_sizes`) → genuinely different op-coverage outcome expected. This is the point. |
+| plain ViT | `ViTForImageClassification` | `output.logits[0, class_id]` (an ImageNet-1k class logit) | **NO — not text-conditioned** | **MUST FLAG**: no text tower; the free-text query cannot condition it. Either fix a class id or map the query → nearest ImageNet label, and label the ViT panel "class-conditioned, not text-conditioned" so the side-by-side is not misread as apples-to-apples. |
+| PaliGemma | `PaliGemmaForConditionalGeneration` | `output.logits[0, answer_pos, answer_token_id]` (logit of the answer token for a "<image> {query}?" prompt) | **NO — generative** | **MUST FLAG**: target is a single vocab logit at a generated position; choosing `answer_pos`/`answer_token_id` is a per-query modeling decision (e.g. teacher-forced single-token answer). Different wiring; ~3B size may exceed the LRP/VRAM ceiling — an expected, recordable comparison result. |
 
 ## Alternatives Considered
 
 | Recommended | Alternative | When to Use Alternative |
 |-------------|-------------|-------------------------|
-| `keeinlev/dynamicLRP` | LXT / LRP-eXplains-Transformers (Achtibat et al., AttnLRP) | If dynamicLRP cannot cover SigLIP-2's ops. LXT is *vendored inside dynamicLRP's repo* (`external/LRP-eXplains-Transformers`) and is the academic predecessor — a real fallback, but it requires model-specific patches (it ships `vit_torch.py`, `bert.py`, etc.) which is exactly the work dynamicLRP avoids. Only fall back if op coverage fails. |
-| `keeinlev/dynamicLRP` | Zennit | Zennit is mature and well-documented but is *layer/module*-level (needs canonizers per architecture). SigLIP-2 has no off-the-shelf Zennit canonizer; you'd write one. dynamicLRP exists specifically to avoid this. |
-| `keeinlev/dynamicLRP` | `captum` (LayerLRP / GradientShap / IG) | If LRP fidelity is poor and you only need *a* heatmap. captum is already a transitive dep. Integrated Gradients is trivial to run on `logits_per_image`. Good cheap sanity-check baseline, not the project goal. |
-| transformers 4.52.3 (pinned) | transformers 5.x (latest 5.8.1) | Never for this project. 5.x has breaking API changes and would diverge from dynamicLRP's pin. |
-| torch 2.7.1 (pinned) | torch 2.12 (latest) | Never unless dynamicLRP is re-tested against it. Engine traverses autograd internals; newer torch can change Node names/graph structure. |
-| `google-cloud-storage` SDK | `gcsfs` + fsspec | If you want pandas/`open()`-style path transparency. Fine, but adds an abstraction layer; the SDK's explicit `blob.upload_from_filename`/`download_to_filename` is clearer for a one-time mirror script. |
-| `gsutil`/`gcloud storage` CLI from notebook | — | Acceptable and simple for the *one-time* image/weight mirror step. Use the Python SDK for anything programmatic in the loop. |
+| `openai/clip-vit-large-patch14` (CLIP) | `openai/clip-vit-base-patch16` (~150M) | If the L/14 LRP graph OOMs the L4 or you want CLIP *under* (not at) the so400m ceiling for a cleaner size-matched comparison. base-patch16 → 14×14 grid, smaller VRAM. Equally non-gated, same `CLIPModel`/`logits_per_image` path. A reasonable swap; L/14 chosen to size-match SigLIP-2-so400m. |
+| `openai/clip-vit-large-patch14` | `openai/clip-vit-large-patch14-336` | Only if 336-res alignment with SigLIP-2's 384 grain matters; larger token grid = more LRP memory for marginal comparison value. Not worth it for v1.1. |
+| `google/vit-base-patch16-224` | `timm` ViT (e.g. `timm.create_model('vit_base_patch16_224')`) | If you want the *exact* model the dynamicLRP `ViT.ipynb` uses. `timm==1.0.20` is already a frozen dep, so a timm ViT adds nothing and is the most faithful reproduction of the engine's known-good path. Acceptable substitute; HF `ViTForImageClassification` preferred only for loader/processor uniformity with the other three HF models. |
+| `google/paligemma2-3b-pt-224` | `google/paligemma-3b-pt-224` (PaliGemma **1**, Gemma-1 decoder) | If PaliGemma 2's Gemma-2 decoder ops trip the engine in a way that obscures the comparison, PaliGemma 1 is a simpler decoder. Both gated, both 3B, both `PaliGemmaForConditionalGeneration` in 4.52.3. PaliGemma 2 chosen as the current/representative family. |
+| `google/paligemma2-3b-pt-224` | `google/paligemma2-3b-mix-224` | `mix` is instruction-tuned/ready-to-use; `pt` is the pretrained base. For a single-token answer-logit target the `pt` base is cleaner and avoids chat-template confounds. Use `mix` only if you want natural-language answers in the prompt loop. |
+| Plain `from_pretrained(...).to(device)` for PaliGemma | `device_map="auto"` via `accelerate` | Only if 3B bf16 materialization OOMs host RAM on the mirror/runtime VM. Adds `accelerate` (conditional dep) — gate behind a checkpoint. |
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `transformers>=5.0` | Breaking API changes; diverges from dynamicLRP's `==4.52.3` pin; SigLIP-2 loading code may differ | `transformers==4.52.3` |
-| `torch` ≠ 2.7.1 | dynamicLRP runs *on the autograd graph*; Node-name/graph drift across torch versions can silently break LRP propagation | `torch==2.7.1` (+ `torchvision==0.22.1`) |
-| `pip install git+https://github.com/keeinlev/dynamicLRP` | Repo has **no** `setup.py`/`pyproject.toml`/packaging metadata — pip install will fail or install nothing usable | `git clone` + `sys.path` / submodule |
-| Floating ("unpinned") `datasets`/`captum` | LRP repo leaves these unpinned; a fresh resolver may pull versions incompatible with torch 2.7.1 | Pin to conservative ranges (see table) |
-| conda / poetry / uv lock as the primary env | dynamicLRP assumes plain `pip install -r requirements.txt`; README prescribes `venv`+pip; mixing resolvers invites the torch/CUDA wheel mismatch class of bug | `venv` + `pip` (per README) |
-| SigLIP-2 *NaFlex* variant via `SiglipModel` | NaFlex variants need `Siglip2Model`; mismatched class → load/shape errors | `so400m-patch14-384` is *fixed-resolution* → `AutoModel`/`SiglipModel` is correct here |
-| `model.get_image_features()` as the attribution target | Returns pooled embeddings, not the query-conditioned similarity — attribution would not be query-driven | Attribute through `output.logits_per_image` (image–text similarity) for query-driven heatmaps |
-| Fine-tuning / training libs (DeepSpeed, PEFT, TRL) | Explicitly out of scope (PROJECT.md: the abandoned approach this restart replaces) | Inference-only; nothing to add |
-| TensorFlow / JAX SigLIP ports | dynamicLRP is PyTorch-only (operates on torch autograd) | PyTorch `transformers` SigLIP-2 |
+| Bumping `transformers` above 4.52.3 "to get newer PaliGemma" | Both `paligemma` and `paligemma2` are ALREADY in 4.52.3. A bump violates the HARD dynamicLRP autograd-graph pin (CLAUDE.md "What NOT to Use", D-08) | `transformers==4.52.3` as-is |
+| Bumping `torch`/`torchvision` for any new model | Engine traverses torch autograd internals; node-name drift silently breaks LRP. None of CLIP/ViT/PaliGemma need a newer torch | `torch==2.7.1` + `torchvision==0.22.1` (unchanged) |
+| Adding `sentencepiece` for PaliGemma | 4.52.3's `PaliGemmaProcessor` uses `GemmaTokenizerFast` (tokenizers-backed); `sentencepiece` is unnecessary and an unvetted resolver perturbation | Nothing — `GemmaTokenizerFast` ships with transformers |
+| Adding `accelerate` unconditionally | Not needed for single-GPU `.to(device)` load; an unpinned add can disturb the frozen resolve | Plain `from_pretrained(...).to(device)`; add `accelerate>=0.26,<1.1` ONLY as a measured OOM fallback |
+| Anonymous `snapshot_download("google/paligemma2-3b-pt-224")` | PaliGemma is GATED — anonymous download 401/403s | Authenticated `snapshot_download(..., token=HF_TOKEN)` on the one-time mirror, account having accepted Gemma terms |
+| `model.get_image_features()` / pooled embedding as the CLIP target | Produces query-INDEPENDENT heatmaps (same mistake called out for SigLIP-2 in v1.0) | `output.logits_per_image[0,0]` (query-conditioned) |
+| Treating the plain-ViT panel as text-query-conditioned | ViT has no text tower; silently equating its class-logit map with the CLIP/SigLIP-2 text-conditioned maps misrepresents the comparison | Explicitly label ViT as class-conditioned; document the query→class mapping |
+| `Siglip2*` NaFlex classes for CLIP/ViT, or `AutoModel` for the ViT classifier | Wrong class → load/shape errors or pooled (non-logit) output | `CLIPModel`, `ViTForImageClassification`, `PaliGemmaForConditionalGeneration` exactly as tabled |
+| Fixing a PaliGemma/ViT/CLIP op-coverage gap (custom Promise, LXT, captum) | Per-model coverage gap is a RECORDED RESULT, not a bug (PROJECT.md Out of Scope; Fallback Ladder declined in v1.0) | Let the engine fail honestly; render "no heatmap" for that model |
 
 ## Stack Patterns by Variant
 
-**If dynamicLRP's `get_model_operations()` reports uncovered ops on SigLIP-2:**
-- First, inspect `src/lrp_engine/promises/` and `lrp_prop_fcns.py` — add a promise/rule for the missing op (the repo is *designed* for this; that's its thesis).
-- If the gap is the attention-pooling head or sigmoid loss head specifically, try `use_attn_lrp=True` / attribute on raw `image_embeds @ text_embeds` logits before the pooling head.
-- Only if both fail: fall back to the vendored LXT (`external/LRP-eXplains-Transformers`) with a ViT-style patch, or captum Integrated Gradients as a degraded baseline.
+**If the model is contrastive image-text (SigLIP-2, CLIP):**
+- Target `output.logits_per_image[0,0]`; detach the text path; reuse the v1.0
+  `attribute()` scope almost verbatim.
+- CLIP differs from SigLIP-2 by having a CLS token + linear projection (no MAP-pool
+  `split_with_sizes`) — expect a *different* op-coverage outcome (the comparison datum).
 
-**If GPU memory is tight with `use_gamma=True` (Gamma-LRP amplifies memory):**
-- Start with `use_gamma=False`, `relevance_filter` < 1.0 (e.g. 0.5) to cut memory/noise — both are documented `LRPEngine` knobs.
-- so400m at fp32 on a single mid-tier GPU should fit; if not, load model in bf16 for the forward pass but note `LRPEngine` defaults to `dtype=torch.float32` for the relevance pass (keep it).
+**If the model is a plain image classifier (ViT):**
+- Target `output.logits[0, class_id]`; there is NO text conditioning.
+- This is the architecture closest to dynamicLRP's verified `ViT.ipynb` — treat it as
+  the cross-model "engine works at all" control.
+- Flag the query→class semantic gap in the adapter and the notebook UI.
 
-**If the one-time mirror (images + ~1.5GB SigLIP-2 weights) is slow:**
-- Use `gcloud storage cp` / `gsutil -m` for the bulk image mirror (parallel), reserve the Python SDK for the in-loop "load map by ID from GCS" reader.
+**If the model is generative (PaliGemma):**
+- Build a "<image> {query}" prompt; target the logit of the chosen answer token at
+  its generated/teacher-forced position: `output.logits[0, answer_pos, answer_token_id]`.
+- Load in `bf16`; size (~3B) is ~7.5× the so400m ceiling — VRAM/coverage failure on
+  the L4 is an EXPECTED, recordable result, not a defect to engineer around.
 
 ## Version Compatibility
 
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
-| `torch==2.7.1` | `torchvision==0.22.1` | Must match minor line exactly. torchvision 0.22.x ↔ torch 2.7.x. A mismatch is a classic silent/segfault failure. |
-| `torch==2.7.1` | Python 3.10–3.12 | 3.11 recommended. Avoid 3.13. |
-| `transformers==4.52.3` | SigLIP-2 (`siglip2`) | Verified: SigLIP-2 added at transformers `v4.49.0-SigLIP-2`; 4.52.3 includes the model. ✅ No conflict with the LRP pin. |
-| `transformers==4.52.3` | `torch==2.7.1` | Both in dynamicLRP's own `requirements.txt` — tested together by the LRP authors. |
-| `dynamicLRP @ master` | `torch==2.7.1`, `transformers==4.52.3` | The repo's `requirements.txt` is the source of truth; mirror it verbatim. |
-| `google-cloud-storage 3.x` | Python 3.11, ADC | Independent of the torch/transformers stack; no shared transitive conflicts observed. |
-| `numpy` | `torch==2.7.1`, `matplotlib==3.8.0` | Let torch wheel constrain numpy (2.x OK with torch 2.7.1). Do not hard-pin numpy 1.x — matplotlib 3.8 + torch 2.7.1 both support numpy 2. |
+| `transformers==4.52.3` | `CLIPModel`/`CLIPProcessor` | Native since long before 4.49; `logits_per_image` shape `(image_bs, text_bs)`. `[VERIFIED: v4.52.3 CLIP docs]` |
+| `transformers==4.52.3` | `ViTForImageClassification`/`ViTImageProcessor` | Native; logits `(batch, num_labels)`; `google/vit-base-patch16-224` → 197 tokens. `[VERIFIED: v4.52.3 ViT docs]` |
+| `transformers==4.52.3` | `paligemma` AND `paligemma2` model types | Both present in 4.52.3 (PaliGemma 2 uses Gemma-2 decoder); `PaliGemmaForConditionalGeneration` logits `(batch, seq, vocab)`. `[VERIFIED: v4.52.3 PaliGemma docs explicitly cover PaliGemma 2]` |
+| `transformers==4.52.3` | `GemmaTokenizerFast` (PaliGemma tokenizer) | Ships with transformers; `tokenizers`-backed → no `sentencepiece` needed. `[VERIFIED: v4.52.3 PaliGemma docs]` |
+| `torch==2.7.1` | all three new models | Standard PyTorch modules; no model needs a newer torch. bf16 supported on the L4. `[ASSUMED — standard transformers/torch contract; no model-specific torch floor above 2.7.1 known]` |
+| `huggingface_hub` (transitive) | gated `snapshot_download(token=...)` | Token-auth download is a long-stable hub feature; whatever 4.52.3 resolved is sufficient — do NOT pin/upgrade hub separately. `[ASSUMED — stable hub API; not re-verified at exact resolved version]` |
+| `google-cloud-storage>=3.0,<4` | the 3 new model mirrors | Identical to the SigLIP-2 mirror; independent of the torch/transformers stack. `[VERIFIED: reused v1.0 pattern]` |
+| `accelerate>=0.26,<1.1` (IF added) | `torch==2.7.1`, `transformers==4.52.3` | Conservative range so the resolver cannot pull a build that re-pins torch/transformers; conditional fallback only. `[ASSUMED — safety band; confirm `pip` plan at install before accepting]` |
 
-## Confidence Assessment
+## Sizing vs. the dynamic-LRP fidelity ceiling
 
-| Claim | Confidence | Basis |
-|-------|------------|-------|
-| dynamicLRP is PyTorch, op-level, model-agnostic, no per-arch code | HIGH | README + arXiv abstract + read `src/lrp_engine/lrp.py` source directly |
-| dynamicLRP has no pip packaging (clone-only) | HIGH | Inspected full repo file tree via GitHub API — no `setup.py`/`pyproject.toml` |
-| dynamicLRP `requirements.txt` pins (torch 2.7.1, transformers 4.52.3, etc.) | HIGH | Fetched the actual `requirements.txt` from `master` |
-| transformers 4.52.3 supports SigLIP-2 (no conflict with LRP pin) | HIGH | SigLIP-2 needs ≥4.49.0 (HF release notes); 4.52.3 > 4.49.0 and ships `siglip2` |
-| Usage pattern (`LRPEngine.run(logits)`, `params_to_interpret=[input]`) | HIGH | Read `src/experiments/ViT.ipynb` cells + `LRPEngine.__init__`/`run` signatures |
-| `logits_per_image` is the right query-driven attribution target | HIGH | SigLIP2 docs/source confirm `logits_per_image` = image–text similarity scores |
-| SigLIP-2 so400m-patch14-384 works via `AutoModel` (fixed-res, not NaFlex) | HIGH | HF docs: fixed-resolution variants usable with `SiglipModel`/`AutoModel` |
-| **Whether dynamicLRP covers 100% of SigLIP-2's specific ops out of the box** | **MEDIUM-LOW** | Could NOT verify — repo has no SigLIP/CLIP example; paper lists ViT/VGG/RoBERTa/T5/Mamba/Whisper/DePlot but not SigLIP. Engine is *designed* to extend, but a custom promise/rule for SigLIP's pooling/sigmoid head may be needed. **This is the flagged risk.** |
-| PyPI latest versions (gcs 3.10.1, jupyterlab 4.5.7, torch latest 2.12) | HIGH | Queried pypi.org JSON API on 2026-05-18 |
+| Model | ~Params | Image grid (tokens) | Vs. so400m (~400M) ceiling |
+|-------|---------|---------------------|-----------------------------|
+| `google/vit-base-patch16-224` | ~86M | 14×14 + CLS = 197 | Well under — lowest LRP/VRAM risk; the "control" |
+| `openai/clip-vit-large-patch14` | ~428M total (~304M vision) | 16×16 + CLS = 257 | At/near the ceiling — size-matched to SigLIP-2 by design |
+| SigLIP-2-so400m (v1.0) | ~400M | 27×27 = 729 (no CLS) | the reference ceiling |
+| `google/paligemma2-3b-pt-224` | ~3B | 16×16 = 256 image + text | **~7.5× over** — included for the comparison; VRAM/coverage failure on the L4 is an expected recordable datum, not a bug (consistent with PROJECT.md "coverage gap = result") |
 
 ## Sources
 
-- `github.com/keeinlev/dynamicLRP` — repo metadata, full file tree, `README.md`, `requirements.txt`, `src/lrp_engine/__init__.py`, `src/lrp_engine/lrp.py` (LRPEngine API), `src/experiments/ViT.ipynb` (usage + viz pattern) — fetched directly 2026-05-18 — HIGH
-- arXiv 2512.07010 abstract ("Dynamic LRP") — model-agnostic claim, 99.92% node coverage / 15 architectures, 47 tensor ops, Promise System — HIGH
-- huggingface.co/google/siglip2-so400m-patch14-384 + HF transformers SigLIP2 docs + transformers `v4.49.0-SigLIP-2` release notes — load class, `logits_per_image`, NaFlex vs fixed-res, min transformers version — HIGH
-- pypi.org JSON API (torch, transformers, google-cloud-storage, jupyterlab) — latest versions + pin existence checks, 2026-05-18 — HIGH
-- `.planning/PROJECT.md`, `README.md`, `metadata/rumsey_manifest.json` — project constraints, GCS bucket, model/dataset shape — HIGH
+- HF transformers v4.52.3 docs — CLIP (`https://huggingface.co/docs/transformers/v4.52.3/en/model_doc/clip`): `CLIPModel`/`CLIPProcessor`, `logits_per_image` shape `(image_bs, text_bs)`, default vision image_size 224 — HIGH
+- HF transformers v4.52.3 docs — ViT (`https://huggingface.co/docs/transformers/v4.52.3/en/model_doc/vit`): `ViTForImageClassification`/`ViTImageProcessor`, logits `(batch, num_labels)`, `google/vit-base-patch16-224` (patch16/224/12L/768h/197 tokens) — HIGH
+- HF transformers v4.52.3 docs — PaliGemma (`https://huggingface.co/docs/transformers/v4.52.3/en/model_doc/paligemma`): `PaliGemmaForConditionalGeneration`/`PaliGemmaProcessor`, logits `(batch, seq, vocab)`, `GemmaTokenizerFast` (no sentencepiece), PaliGemma 2 supported in 4.52.3 — HIGH
+- HF model card `google/paligemma2-3b-pt-224`: GATED ("you have to accept the conditions to access its files"), Gemma license, 3B params, `AutoProcessor`/`AutoModelForImageTextToText` example — HIGH
+- HF model card `openai/clip-vit-large-patch14` / community size references: ViT-L/14, ~428M total params, not gated — MEDIUM (param count from secondary aggregators; class/grid from primary docs)
+- arXiv 2512.07010 ("Always Keep Your Promises", dynamicLRP) abstract + vendored `third_party/dynamicLRP` tree (promises: add/cat/dummy/softmax/split/stack/sub/sum/unbind; `model_specific/mosaicbert.py` only) — the engine has NO CLIP/PaliGemma/ViT-specific model module; per-model coverage is empirical and is the v1.1 data — HIGH on what is/isn't vendored; coverage outcome intentionally UNKNOWN
+- `.planning/PROJECT.md`, `requirements.txt`, `01-03-SUMMARY.md`, v1.0 `01-RESEARCH.md`, `CLAUDE.md` — frozen pins, SigLIP-2 `split_with_sizes` recorded gap, "coverage gap = result not bug" decision, mirror/loader patterns — HIGH
 
 ---
-*Stack research for: dynamic LRP attribution on SigLIP-2 for map-image pixel labelling (research pipeline)*
-*Researched: 2026-05-18*
+*Stack research for: multi-model dynamic-LRP comparison additions (CLIP / PaliGemma / plain ViT) under frozen transformers==4.52.3 / torch==2.7.1 / vendored dynamicLRP*
+*Researched: 2026-05-19*
+</content>
