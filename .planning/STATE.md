@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: executing
-stopped_at: 01-03 complete-with-finding (SigLIP-2 dynamicLRP op-coverage gap; D-02/D-03 user-waived)
-last_updated: "2026-05-19T12:00:00.000Z"
-last_activity: 2026-05-19 -- 01-03 finalized as honest smoke test; SigLIP-2 attribution finding recorded; peak-VRAM blocker closed
+milestone: v1.1
+milestone_name: Multi-Model Dynamic-LRP Comparison
+status: planning
+last_updated: "2026-05-19T01:25:55.229Z"
+last_activity: 2026-05-19
 progress:
-  total_phases: 2
+  total_phases: 0
   completed_phases: 0
-  total_plans: 3
-  completed_plans: 3
-  percent: 50
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,12 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 01 (pinned-environment-gcs-mirrors-and-a-verified-single-slice-a) — all 3 plans done; 01-03 COMPLETE-WITH-FINDING
-Plan: 3 of 3 complete (01-03 finalized as an honest end-to-end smoke test after the user resolved the Task 3 human-verify checkpoint)
-Status: 01-03 complete-with-finding — SigLIP-2 dynamicLRP op-coverage gap is an accepted per-model finding; D-02/D-03 visual gate consciously WAIVED for SigLIP-2 by the user; Fallback Ladder DECLINED
-Last activity: 2026-05-19 -- 01-03 finalized; honest smoke test executes end-to-end (0 cell errors); peak forward VRAM 4.326 GB recorded; multi-model reframe noted
-
-Progress: [██████████] 3/3 plans complete (01-01, 01-02, 01-03-with-finding). NOTE: 01-03's central deliverable (a control-verified SigLIP-2 heatmap) is NOT met — recorded as a documented negative result under the reframed multi-model purpose, not a clean pass.
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-05-19 — Milestone v1.1 started
 
 ### Resume
 
