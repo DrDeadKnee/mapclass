@@ -52,4 +52,17 @@ cannot traverse is a *recorded result*, not a failure.
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| *(filled by roadmap)* | | |
+| ADPT-01 | Phase 1 | Pending |
+| ADPT-02 | Phase 1 | Pending |
+| ADPT-03 | Phase 1 | Pending |
+| ADPT-04 | Phase 1 | Pending |
+| ATTR-01 | Phase 2 | Pending |
+| ATTR-02 | Phase 2 | Pending |
+| ATTR-03 | Phase 2 | Pending |
+| MODEL-01 | Phase 2 | Pending |
+| MODEL-02 | Phase 3 | Pending |
+| MODEL-03 | Phase 4 | Pending |
+| MODEL-04 | Phase 4 | Pending |
+| CMP-01 | Phase 5 | Pending |
+| CMP-02 | Phase 5 | Pending |
+| CMP-03 | Phase 5 | Pending |

@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Multi-Model Dynamic-LRP Comparison
 status: planning
-last_updated: "2026-05-19T01:25:55.229Z"
+last_updated: "2026-05-19T02:00:00.000Z"
 last_activity: 2026-05-19
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,39 +17,32 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-18)
+See: .planning/PROJECT.md (updated 2026-05-19)
 
-**Core value:** A working, repeatable loop — pick a map + a text query → get a dynamic-LRP attribution heatmap overlaid on that map → judge it visually — that scales to a configurable sweep browsable in a notebook.
-**Current focus:** Phase 01 — pinned-environment-gcs-mirrors-and-a-verified-single-slice-a
+**Core value:** A working, repeatable cross-model comparison — pick the locked map + a text query → run dynamic-LRP attribution through SigLIP-2 / CLIP / PaliGemma / a plain ViT → see their heatmaps side-by-side (and, per model, whether dynamic LRP covers that architecture at all) → judge visually. The comparison itself is the product.
+**Current focus:** Phase 1 — Adapter Contract + Pre-Flight Guards
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-05-19 — Milestone v1.1 started
+Phase: 1 of 5 (Adapter Contract + Pre-Flight Guards)
+Plan: — (not yet planned)
+Status: Ready to plan
+Last activity: 2026-05-19 — v1.1 roadmap created (5 phases, --reset-phase-numbers active; v1.0 archived to .planning/archive/v1.0-milestone/)
+
+Progress: [░░░░░░░░░░] 0%
 
 ### Resume
 
-Phase 1 plans are all executed. 01-03 is **complete-with-finding**, NOT a clean
-pass: dynamicLRP does not cover SigLIP-2-so400m's `split_with_sizes`
-(`SplitWithSizesBackward0`, MAP-pool head), so `attribute()` produces no
-relevance and no heatmap for SigLIP-2. At the 01-03 human-verify checkpoint the
-user **declined the entire Fallback Ladder** (no custom Promise / pre-pool /
-LXT / captum IG — *"Smoke-test was good, it didn't crash. Let's leave well
-enough alone and move on."*) and the Phase 1 D-02/D-03 visual-eyeball gate is
-**consciously WAIVED for SigLIP-2**. `01_single_slice.ipynb` was reframed into
-an honest end-to-end smoke test (load → forward → peak forward VRAM → coverage
-probe → caught finding → source map; 0 cell errors, exit 0). `third_party/
-dynamicLRP` is unmodified; VENDOR_SHA intact (no T-01-SC3 deviation taken).
-
-**Open at the next milestone/phase transition (do NOT auto-resolve here):**
-PROJECT.md says SigLIP-2 is fixed and model-swap is out of scope, but the
-user's decision reframes the project as a **multi-model comparison of
-dynamic-LRP** (SigLIP-2 = one negative-result model). PROJECT.md scope wording,
-ROADMAP Phase 1 success criteria 4-5 (assume a working SigLIP-2 heatmap), and
-the Phase 2 sweep premise all need reconciliation against the multi-model
-framing before Phase 2 starts. Executor did NOT rewrite PROJECT.md.
+v1.1 roadmap is freshly created. 14 requirements (ADPT-01..04, ATTR-01..03,
+MODEL-01..04, CMP-01..03) mapped across 5 phases, 100% coverage. PROJECT.md /
+REQUIREMENTS.md are already reconciled to the multi-model framing (the prior
+v1.0 scope tension is resolved by the v1.1 milestone definition; SigLIP-2's
+recorded `SplitWithSizesBackward0` op-coverage gap is now the regression-oracle
+datum, not a bug). v1.0 infra (pinned env, GCS image mirror, loaders, D-09
+signed/zero-centered overlay) is reused as-is. Hard ordering preserved: adapter
+contract + target decision + guards (Phase 1) → parameterized overlay +
+SigLIP-2 oracle (Phase 2) → ViT (Phase 3) → CLIP + PaliGemma (Phase 4) →
+side-by-side notebook done-gate (Phase 5). Next: `/gsd:plan-phase 1`.
 
 ## Performance Metrics
 
@@ -79,10 +72,10 @@ framing before Phase 2 starts. Executor did NOT rewrite PROJECT.md.
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Roadmap]: 2-phase structure — verify the single-slice attribution primitive (with three sanity controls) before any sweep; Phase 2 is pure orchestration with zero new attribution logic.
-- [Roadmap]: Phase 1 flagged NEEDS DEEPER RESEARCH — the SigLIP-2 ↔ dynamicLRP contrastive-encoder adaptation is the central technical risk; sequence as reproduce ViT.ipynb first, then swap SigLIP-2 + similarity target.
-- [01-03, user]: dynamicLRP does NOT cover SigLIP-2-so400m (`split_with_sizes` MAP-pool op) — accepted as a per-model FINDING; the ENTIRE Fallback Ladder DECLINED (no custom Promise/pre-pool/LXT/captum IG); D-02/D-03 visual-eyeball gate consciously WAIVED for SigLIP-2.
-- [01-03, user]: Project reframed as a multi-model comparison of dynamic-LRP (SigLIP-2 = one negative-result model). Creates a PROJECT.md/ROADMAP scope tension to reconcile at the next milestone/phase transition (executor did not rewrite PROJECT.md).
+- [v1.1 Roadmap]: 5-phase structure (coarse granularity) — research's 7-phase order consolidated by merging parameterized-overlay+attribution with the SigLIP-2 regression oracle (Phase 2), since SigLIP-2 is the only non-new model and both are low-risk standard-pattern work; all hard ordering constraints preserved.
+- [v1.1 Roadmap]: Phase 4 (CLIP + PaliGemma) research/decision-flagged — CLIP CLS-token strip geometry must be validated against real CLIP relevance; PaliGemma answer-token target is a per-query modeling decision resolved at the Phase 1 target-decision step.
+- [01-03, user, v1.0]: dynamicLRP does NOT cover SigLIP-2-so400m (`split_with_sizes` MAP-pool op) — accepted as a per-model FINDING; entire Fallback Ladder DECLINED. In v1.1 this is the regression-oracle datum Phase 2 must reproduce.
+- [Pivot]: Project reframed as a multi-model comparison of dynamic-LRP (SigLIP-2 = one negative-result model); PROJECT.md/REQUIREMENTS.md now reflect this — prior scope tension resolved.
 
 ### Pending Todos
 
@@ -90,11 +83,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1 — 01-03 ARCHITECTURAL, RESOLVED 2026-05-19] **dynamicLRP op-coverage FAILS on SigLIP-2-so400m as a contrastive MAP-pool encoder.** Confirmed on NVIDIA L4: `LRPEngine.run` rejects all target forms — `logits_per_image[0,0]` (0-dim → IndexError); `[:1,:1]`/`.reshape(1)` → error path at autograd node `SplitWithSizesBackward0`; coverage probe op count = 26. `split_with_sizes` is intrinsic to SigLIP-2's attention/MAP-pool head and is outside the current engine's coverage. **RESOLUTION (user, 01-03 human-verify checkpoint):** the user DECLINED the entire Fallback Ladder (no custom Promise, no pre-pool/`use_attn_lrp`, no LXT, no captum IG) and ACCEPTED this as a per-model FINDING for the reframed multi-model dynamic-LRP comparison; the Phase 1 D-02/D-03 visual gate is consciously WAIVED for SigLIP-2. `01_single_slice.ipynb` reframed to an honest smoke test. `third_party/dynamicLRP` unmodified; no T-01-SC3 deviation taken. Not to be re-attempted without a new explicit user decision.
-- [Phase 1 — INFORMATIONAL] dynamicLRP faithfulness on SigLIP-2 is moot for this project: no relevance is produced for SigLIP-2, so the three sanity controls are not applicable (gate user-waived). Relevant only if SigLIP-2 attribution is revisited under the multi-model framing.
-- [Phase 1 — RESOLVED 2026-05-19] Peak VRAM blocker. **CLOSED:** the single so400m FORWARD on the locked slice peaks at **4.326 GB (4,644,488,704 bytes)** — measured + recorded in `notebooks/01_single_slice.ipynb` Cell 4. Caveat: this is forward-only; the dynamicLRP relevance-pass peak (Pitfall E activation retention) is unmeasurable for SigLIP-2 because the relevance pass never completes. Phase 2 sweep sizing should treat 4.326 GB as a forward-only lower bound, not the full attribution peak.
-- [Phase transition — NEW, OPEN] PROJECT.md/ROADMAP scope tension: PROJECT.md fixes SigLIP-2 and puts model-swap out of scope, but the user's 01-03 decision reframes the project as a multi-model dynamic-LRP comparison (SigLIP-2 = negative result). ROADMAP Phase 1 success criteria 4-5 and the Phase 2 sweep premise assume a working SigLIP-2 heatmap. Reconcile at the next milestone/phase-transition decision before Phase 2. Executor did NOT rewrite PROJECT.md.
-- [Phase 1] Rumsey URL health unknown; the per-id outcome manifest from ingestion is the only signal of how many maps are actually available — budget for a fraction being unavailable.
+- [v1.1 — design, OPEN until Phase 1] The per-architecture attribution target is the single decision that gates everything; getting it wrong silently produces query-independent heatmaps. Must be resolved + documented for all 4 models in Phase 1 (ADPT-02) before any harness loop.
+- [v1.1 — risk, expected] PaliGemma (~3B, ~7.5× the so400m ceiling) likely OOMs the L4; this is an expected, recordable result, not a bug to engineer around (Phase 4 / Phase 5 captioned "no heatmap" tile).
+- [v1.1 — scope guard] No sweep, no per-model coverage-gap fixing / vendor patching, no pin bumps. `VENDOR_SHA==405e74243ecaa1f615f418fdc8ba24c3c5889b1e` must stay intact (ADPT-04 pre-flight enforces this).
+- [Carried, v1.0] SigLIP-2 single-forward peak VRAM = 4.326 GB (forward-only lower bound; the dynamicLRP relevance-pass peak is unmeasured because the SigLIP-2 relevance pass never completes). Relevant to Phase 5 sequential load/free OOM budgeting.
 
 ## Deferred Items
 
@@ -102,10 +94,12 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Reporting | Structured per-model op-coverage report table | Deferred to future (user chose "overlays only" for v1.1) | v1.1 scope |
+| Models | Additional models beyond the 4 | Deferred | v1.1 scope |
+| Metrics | Quantitative attribution / faithfulness scoring | Deferred | v1.1 scope |
 
 ## Session Continuity
 
-Last session: 2026-05-19T12:00:00.000Z
-Stopped at: 01-03 complete-with-finding — honest smoke test executed end-to-end (0 cell errors); SigLIP-2 op-coverage finding recorded; D-02/D-03 user-waived; Fallback Ladder declined; peak-VRAM blocker closed; multi-model reframe + PROJECT.md tension flagged for the next transition
-Resume file: .planning/phases/01-pinned-environment-gcs-mirrors-and-a-verified-single-slice-a/01-03-SUMMARY.md
+Last session: 2026-05-19T02:00:00.000Z
+Stopped at: v1.1 roadmap created (ROADMAP.md, REQUIREMENTS.md traceability, STATE.md written); 5 phases, 14/14 requirements mapped, 100% coverage
+Resume file: None
