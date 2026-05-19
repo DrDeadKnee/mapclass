@@ -63,6 +63,30 @@ recorded deviation when taken (T-01-SC3 — deviates from the vendored SHA):
      Integrated Gradients on ``logits_per_image[0, 0]`` as a degraded but
      trivially-correct baseline (captum is already a pinned dep).
 ----------------------------------------------------------------------------
+
+EMPIRICAL FINDING (Plan 01-03 execution, 2026-05-19, NVIDIA L4, pinned stack):
+The as-is path FAILS on SigLIP-2-so400m. ``LRPEngine.run`` against the
+contrastive target was exercised in all forms:
+  * ``logits_per_image[0, 0]`` (0-dim) → ``IndexError`` (engine's
+    starting-relevance builder indexes a 0-dim tensor — A5 confirmed: a 0-dim
+    target is NOT accepted).
+  * ``logits_per_image[:1, :1]`` (1×1, 2-D) and ``...[0,0].reshape(1)`` (1-D)
+    → the engine's first-pass traversal returns its 5-tuple ERROR path with
+    ``TypeError("'DummyPromise' object is not iterable")`` at autograd node
+    ``SplitWithSizesBackward0``.
+  * Fallback step 3 (``use_attn_lrp=True``; pre-pool ``image_embeds ·
+    text_embeds``; query-conditioned vision-pooled · detached-text) ALL fail
+    at the SAME ``SplitWithSizesBackward0`` node with the same TypeError.
+The ``split_with_sizes`` op is intrinsic to SigLIP-2's attention / MAP-pool
+head. The engine registers ``SplitWithSizesBackward`` → ``SplitBackwardProp``
+but its Promise consumer chokes on SigLIP-2's split topology. This is a
+genuine engine op-coverage failure on SigLIP-2 as a contrastive MAP-pool
+encoder — exactly the MEDIUM-LOW research risk. Resolution requires Fallback
+Ladder step 2 (a custom/repaired engine Promise — deviates from the vendored
+SHA, T-01-SC3) OR step 5 (captum Integrated Gradients degraded baseline).
+This is an architectural decision surfaced at the Plan 01-03 human-verify
+checkpoint (the plan designates the Fallback Ladder as the FAIL response
+path); it is NOT auto-selected by the executor.
 """
 
 from __future__ import annotations
