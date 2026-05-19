@@ -40,7 +40,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-03-PLAN.md — Single-slice SigLIP-2 + dynamic-LRP attribution + 27x27 overlay + three sanity controls notebook (ATTR-01..03, VIZ-01)
+- [x] 01-03-PLAN.md — Single-slice SigLIP-2 + dynamic-LRP attribution + 27x27 overlay + three sanity controls notebook (ATTR-01..03, VIZ-01) — **COMPLETE-WITH-FINDING:** pipeline/overlay code + 16 unit tests delivered; dynamicLRP does NOT cover SigLIP-2 (`split_with_sizes` MAP-pool op) so NO heatmap is produced; D-02/D-03 visual gate consciously WAIVED for SigLIP-2 and Fallback Ladder DECLINED by the user; recorded as a per-model finding for the reframed multi-model dynamic-LRP comparison. Not a clean pass.
 
 **UI hint**: yes
 
@@ -66,5 +66,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 2/3 | In Progress|  |
-| 2. Configurable Sweep, Run Caching, and Contact-Sheet Browse | 0/TBD | Not started | - |
+| 1. Pinned Environment, GCS Mirrors, and a Verified Single-Slice Attribution | 3/3 | Plans done — 01-03 complete-with-finding (SigLIP-2 dynamicLRP op-coverage gap; success criteria 4-5 NOT met for SigLIP-2; D-02/D-03 user-waived; multi-model reframe pending PROJECT.md reconciliation) |  |
+| 2. Configurable Sweep, Run Caching, and Contact-Sheet Browse | 0/TBD | Not started — gated on PROJECT.md/ROADMAP scope reconciliation against the multi-model reframe | - |

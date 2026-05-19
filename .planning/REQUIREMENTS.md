@@ -21,13 +21,13 @@ Requirements for the initial exploration pipeline. Each maps to a roadmap phase.
 ### Model & Attribution
 
 - [ ] **MODEL-01**: Load SigLIP-2-so400m once from the GCS model mirror with model-aligned preprocessing (resize/normalize to 384, patchify) that records the resize transform for later overlay alignment
-- [ ] **ATTR-01**: Single forward + dynamic-LRP attribution for one (map, query) pair, attributing the image↔detached-text similarity scalar (`logits_per_image`), reducing image-token relevance to a per-patch grid
-- [ ] **ATTR-02**: Reconstruct patch relevance into a 2D heatmap with a fixed normalization, correctly handling SigLIP-2's 27×27 patch grid and the 384÷14 non-integer edge discard
-- [ ] **ATTR-03**: Three near-zero-cost sanity controls (query-swap, model-randomization, occlusion) implemented as a Phase 1 correctness gate — a (map, query) attribution is only trusted if an unrelated query changes the heatmap, randomized vision weights collapse it to noise, and occluding top-relevance patches drops image-text similarity more than occluding random patches
+- [~] **ATTR-01**: Single forward + dynamic-LRP attribution for one (map, query) pair, attributing the image↔detached-text similarity scalar (`logits_per_image`), reducing image-token relevance to a per-patch grid — **CODE DELIVERED, NOT MET FOR SigLIP-2 (01-03 FINDING):** `attribute()` is implemented correctly (forward + LRP one scope, `logits_per_image[0,0]`) but dynamicLRP does NOT cover SigLIP-2's `split_with_sizes` MAP-pool op, so it raises `RuntimeError` and produces NO relevance for SigLIP-2. User-accepted per-model finding for the reframed multi-model comparison; Fallback Ladder DECLINED.
+- [~] **ATTR-02**: Reconstruct patch relevance into a 2D heatmap with a fixed normalization, correctly handling SigLIP-2's 27×27 patch grid and the 384÷14 non-integer edge discard — **CODE DELIVERED + UNIT-TESTED, NOT END-TO-END VERIFIED FOR SigLIP-2 (01-03 FINDING):** `overlay.py` (signed/magnitude 27×27 grid, 6-px discard, zero-centered composite) passes 16/16 units but is never exercised on real SigLIP-2 relevance (none is produced).
+- [~] **ATTR-03**: Three near-zero-cost sanity controls (query-swap, model-randomization, occlusion) implemented as a Phase 1 correctness gate — a (map, query) attribution is only trusted if an unrelated query changes the heatmap, randomized vision weights collapse it to noise, and occluding top-relevance patches drops image-text similarity more than occluding random patches — **NOT MET FOR SigLIP-2 (01-03 FINDING):** the controls were authored but cannot be rendered/eyeballed because no SigLIP-2 relevance exists; D-02/D-03 visual-eyeball gate consciously WAIVED for SigLIP-2 by the user.
 
 ### Visualization
 
-- [ ] **VIZ-01**: Heatmap overlaid on the source map (alpha-blended), displayed inline in a JupyterLab cell for a single (map, query) slice — **Phase 1 finish line**
+- [~] **VIZ-01**: Heatmap overlaid on the source map (alpha-blended), displayed inline in a JupyterLab cell for a single (map, query) slice — **Phase 1 finish line** — **NOT MET FOR SigLIP-2 (01-03 FINDING):** `composite()` is implemented + unit-tested but no SigLIP-2 heatmap is produced (dynamicLRP op-coverage gap); `01_single_slice.ipynb` instead executes as an honest end-to-end smoke test (forward + peak VRAM + caught coverage finding + source map shown). User-waived gate, recorded as a per-model finding.
 - [ ] **VIZ-02**: Contact-sheet browse of all sweep overlays inside the notebook (grid of maps × queries with labels) — **v1 finish line**
 
 ### Sweep
@@ -79,10 +79,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | DATA-03 | Phase 1 | Pending |
 | DATA-04 | Phase 1 | Pending |
 | MODEL-01 | Phase 1 | Pending |
-| ATTR-01 | Phase 1 | Pending |
-| ATTR-02 | Phase 1 | Pending |
-| ATTR-03 | Phase 1 | Pending |
-| VIZ-01 | Phase 1 | Pending |
+| ATTR-01 | Phase 1 | Code delivered; NOT met for SigLIP-2 (01-03 finding — dynamicLRP op-coverage gap, no relevance) |
+| ATTR-02 | Phase 1 | Code delivered + unit-tested; not end-to-end verified for SigLIP-2 (01-03 finding) |
+| ATTR-03 | Phase 1 | Controls authored; NOT met for SigLIP-2 (01-03 finding — no relevance to eyeball; D-02/D-03 user-waived) |
+| VIZ-01 | Phase 1 | Code delivered; NOT met for SigLIP-2 (01-03 finding — no heatmap; smoke test instead) |
 | VIZ-02 | Phase 2 | Pending |
 | SWEEP-01 | Phase 2 | Pending |
 | SWEEP-02 | Phase 2 | Pending |
