@@ -102,6 +102,13 @@ historical documentation of the escalation route that was offered and
 declined — it MUST NOT be implemented later for SigLIP-2 without an explicit
 new user decision. ``third_party/dynamicLRP`` is unmodified (VENDOR_SHA
 intact; no T-01-SC3 deviation taken).
+
+UPDATE 2026-05-23 — that explicit new user decision was made: Fallback Ladder
+step 5 (captum Integrated Gradients) is now provided as a SEPARATE
+query-conditioned baseline in ``attribution_ig.py`` (selected via the notebook's
+``METHOD="ig"`` switch) so SigLIP-2/CLIP get real query-driven heatmaps. It does
+NOT touch the engine — VENDOR_SHA still intact, no T-01-SC3 deviation. Ladder
+steps 2-4 (custom Promise / pre-pool / ``use_attn_lrp``) remain declined.
 """
 
 from __future__ import annotations
