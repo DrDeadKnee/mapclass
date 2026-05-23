@@ -265,7 +265,12 @@ def _target_siglip_cosine(model, output, forward_inputs):
     # logits_per_image drains ~all relevance into the bias and the heatmap
     # vanishes. The raw cosine sim is the same query-conditioned quantity and
     # keeps relevance flowing to the pixels (verified non-vanishing on the L4).
-    return (output.image_embeds @ output.text_embeds.t())[0, 0]
+    #
+    # Return the (1,1) matmul (NOT a 0-dim [0,0] scalar): the engine accepts the
+    # 2-D form on the first try, so attribute()'s scalar->2d->1d fallback ladder
+    # never re-runs LRPEngine.run on the same (already-mutated) forward graph —
+    # that re-run intermittently dead-ends ("No valid curnode candidate").
+    return output.image_embeds @ output.text_embeds.t()
 
 
 def _resolve_vit_class_id(model, query):
