@@ -326,8 +326,27 @@ class Promise:
 
     def bwd(self, x):
         """Applies all operations to the relevance of the operand from the origin of the Promise."""
-        for fcn in self.compiled_bwd:
-            x = fcn(x)
+        import os as _os
+        _dbg = _os.environ.get("LRP_DEBUG")
+        for _i, fcn in enumerate(self.compiled_bwd):
+            if _dbg:
+                _before = tuple(x.shape) if hasattr(x, "shape") else type(x).__name__
+                try:
+                    x = fcn(x)
+                except Exception as _e:
+                    _meta = {a: getattr(fcn, a, None) for a in
+                             ("_saved_self_sizes", "_saved_self_sym_sizes",
+                              "_saved_dim", "_saved_start", "_saved_end",
+                              "_saved_step")}
+                    print(f"[LRP_DEBUG] promise.bwd fcn#{_i} FAILED: in_shape={_before} "
+                          f"fcn={type(fcn).__name__} meta={_meta} "
+                          f"next={[type(n[0]).__name__ if n[0] else None for n in getattr(fcn,'next_functions',())]} "
+                          f"err={_e}")
+                    raise
+                print(f"[LRP_DEBUG] promise.bwd fcn#{_i}: {_before} -> "
+                      f"{tuple(x.shape) if hasattr(x,'shape') else type(x).__name__}")
+            else:
+                x = fcn(x)
         return x
     
     def __add__(self, other: torch.Tensor):

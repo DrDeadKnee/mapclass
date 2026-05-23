@@ -937,6 +937,17 @@ class LRPPropFunctions:
         dilation = grad_fn._saved_dilation
         groups = grad_fn._saved_groups
 
+        # MAPCLASS PATCH: a Conv2d created with padding="valid" (e.g. SigLIP-2's
+        # patch-embedding conv) saves _saved_padding as the string "valid" or an
+        # empty tuple, so the per-dim indexing padding[i] in the output_padding
+        # computation below (and the conv_transpose call) IndexErrors. Normalize
+        # to explicit per-dim zeros. (padding=0 convs, e.g. ViT, already yield
+        # (0,0) and are unaffected.)
+        if isinstance(padding, str) or padding is None:
+            padding = (0,) * num_dims          # "valid" == no padding
+        elif len(padding) < num_dims:
+            padding = tuple(padding) + (0,) * (num_dims - len(padding))
+
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:

@@ -514,6 +514,16 @@ class LRPEngine:
                 #     print(curnode_outputs)
                 curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs)
             except Exception as e:
+                import os as _os
+                if _os.environ.get("LRP_DEBUG"):
+                    import traceback as _tb
+                    def _shp(x):
+                        return tuple(x.shape) if hasattr(x, "shape") else type(x).__name__
+                    _fi = finalized_inputs if isinstance(finalized_inputs, tuple) else (finalized_inputs,)
+                    print(f"[LRP_DEBUG] prop FAILED at node={type(curnode).__name__} "
+                          f"topo_ind={curnode.metadata.get('topo_ind')} "
+                          f"input_shapes={[_shp(x) for x in _fi]}")
+                    _tb.print_exc()
                 print(e)
                 return curnode, curnode_inputs, in_adj_list, out_adj_list, e
 
