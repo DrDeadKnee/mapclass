@@ -112,14 +112,51 @@ def to_patch_grid(
     )
 
 
-def _sym_norm(arr: np.ndarray):
+def to_pixel_grid(relevance, has_cls: bool = False):
+    """Full-resolution per-pixel relevance — NO patch block-averaging (D-09).
+
+    For pixel-shaped ``(1, 3, H, W)`` relevance (the real path for all four image
+    models, IG and dynamicLRP alike), this returns the channel-sum at the native
+    input resolution: a fine-grained ``(H, W)`` heatmap instead of the coarse
+    27×27 / 14×14 patch blocks ``to_patch_grid`` produces. ``has_cls`` is a no-op
+    here (pixel relevance has no CLS token). Token-shaped relevance has no pixel
+    resolution — use ``to_patch_grid`` for that.
+
+    Returns ``(signed_HxW, mag_HxW)`` as float64 ndarrays. ``.float()`` first so
+    bf16 relevance (PaliGemma) survives the numpy conversion.
+    """
+    r = relevance.detach().float()
+    if r.dim() != 4:
+        raise ValueError(
+            "to_pixel_grid expects pixel-shaped (1,3,H,W) relevance; for "
+            "token-shaped relevance use to_patch_grid."
+        )
+    r = r[0]                       # (3, H, W)
+    signed = r.sum(0)              # (H, W) SIGNED — no abs
+    mag = r.abs().sum(0)           # (H, W) >= 0 magnitude
+    return (
+        signed.cpu().numpy().astype(np.float64),
+        mag.cpu().numpy().astype(np.float64),
+    )
+
+
+def _sym_norm(arr: np.ndarray, pct: float = 99.0):
     """Zero-centered symmetric norm so white == 0 on the bwr diverging map.
 
-    ``M = max(|arr|)`` → ``TwoSlopeNorm(vmin=-M, vcenter=0, vmax=M)`` (D-09).
+    D-09 keeps the map signed and physical-unit. The scale reference is the
+    ``pct``-th percentile of ``|arr|`` (default 99) rather than the raw max, so a
+    few outlier pixels do not saturate the colormap and wash everything else to
+    white — the dominant cause of "the heatmap looks too sparse". Values beyond
+    the reference clip to full red/blue. ``M = percentile(|arr|, pct)`` →
+    ``TwoSlopeNorm(vmin=-M, vcenter=0, vmax=M)``.
     """
     from matplotlib.colors import TwoSlopeNorm
 
-    m = float(np.nanmax(np.abs(arr))) if arr.size else 0.0
+    a = np.abs(np.asarray(arr, dtype=np.float64))
+    finite = a[np.isfinite(a)]
+    m = float(np.percentile(finite, pct)) if finite.size else 0.0
+    if not np.isfinite(m) or m == 0.0:                     # flat/degenerate
+        m = float(np.nanmax(a)) if a.size else 0.0
     if not np.isfinite(m) or m == 0.0:
         m = 1e-12
     return TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)
@@ -133,6 +170,7 @@ def composite(
     *,
     title: Optional[str] = None,
     interpolation: str = "nearest",
+    pct: float = 99.0,
 ):
     """Alpha-blend the SIGNED 27×27 grid onto the source map (un-squashed).
 
@@ -155,8 +193,16 @@ def composite(
 
     if grid_mag is not None:
         mag = np.asarray(grid_mag, dtype=np.float64)
-        mmax = float(np.nanmax(mag)) if mag.size else 0.0
-        alpha = (mag / mmax) if mmax > 0 else np.full_like(mag, 0.5)
+        finite = mag[np.isfinite(mag)]
+        # Percentile reference (not raw max) so outlier cells don't push every
+        # other cell's alpha to ~0 and make the overlay look empty.
+        mref = float(np.percentile(finite, pct)) if finite.size else 0.0
+        if mref <= 0:
+            mref = float(np.nanmax(mag)) if mag.size else 0.0
+        alpha = (
+            np.clip(mag / mref, 0.0, 1.0) if mref > 0
+            else np.full_like(mag, 0.5)
+        )
         # Scale the per-cell alpha into a readable band.
         alpha = 0.15 + 0.70 * alpha
     else:
@@ -165,7 +211,7 @@ def composite(
     im = ax.imshow(
         grid_signed,
         cmap="bwr",
-        norm=_sym_norm(grid_signed),
+        norm=_sym_norm(grid_signed, pct=pct),
         alpha=alpha,
         interpolation=interpolation,
         extent=(0, w, h, 0),

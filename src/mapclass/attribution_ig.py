@@ -26,13 +26,15 @@ from __future__ import annotations
 
 from mapclass.attribution import AttributionResult  # reuse the dataclass
 
-# IG path resolution + memory knobs. n_steps trades fidelity for compute and
-# barely affects peak VRAM (captum chunks the scaled inputs); internal_batch_size
-# is what bounds peak VRAM. Measured on the L4 (CLAUDE.md hardware constraint)
-# for SigLIP-2 so400m: ~6.6 GB at ibs=1, so ibs=2 (~11-12 GB) is the safe default
-# on a clean 22 GB GPU. Lower to 1 if a larger model OOMs; raise if VRAM is free.
+# IG path resolution + memory knobs. n_steps trades fidelity for compute (raise
+# it for a smoother/denser map) and barely affects peak VRAM. Keep
+# internal_batch_size = 1: the bundled target_fns index sample 0 (e.g.
+# logits_per_image[0, 0]) and PaliGemma is a fused VLM whose text holds exactly
+# one image's worth of <image> tokens — so >1 either mis-attributes or raises
+# "Number of images does not match ... special image tokens". ibs=1 is also what
+# fits the L4 for every model (SigLIP-2 so400m ~6.6 GB; PaliGemma-3B OOMs at >1).
 _DEFAULT_STEPS = 32
-_DEFAULT_INTERNAL_BS = 2
+_DEFAULT_INTERNAL_BS = 1
 
 
 def attribute_ig(
