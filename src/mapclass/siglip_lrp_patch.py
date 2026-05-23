@@ -106,19 +106,24 @@ def attach_lrp_pooling_head(model, atol: float = None):
     head._lrp_bk = torch.nn.Parameter(b[embed_dim:2 * embed_dim].clone())
     head._lrp_bv = torch.nn.Parameter(b[2 * embed_dim:].clone())
 
-    # Tolerance scales with precision: fp32 is exact-ish; bf16/fp16 carry ~2-3
-    # significant digits, so a multi-op attention reformulation differs at ~1e-2.
-    if atol is None:
-        atol = 1e-3 if dtype in (torch.float32, torch.float64) else 5e-2
-    x = torch.randn(2, 17, embed_dim, device=dev, dtype=dtype)
+    # Compare on a fixed (seeded) input with a RELATIVE tolerance: fp32 matches
+    # to ~1e-6, but bf16/fp16 carry only ~2-3 significant digits, so a multi-op
+    # attention reformulation differs at ~1e-2 *relative* and the absolute spread
+    # depends on (random) magnitude. rel_tol on the reformulation is the robust,
+    # run-to-run-stable check.
+    rel_tol = 1e-5 if dtype in (torch.float32, torch.float64) else 3e-2
+    g = torch.Generator(device=dev).manual_seed(0)
+    x = torch.randn(2, 17, embed_dim, device=dev, dtype=dtype, generator=g)
     with torch.no_grad():
         ref = head.forward(x)                              # original nn.MHA path
         new = _pooling_head_forward(head, x)               # split-free path
     max_abs = (ref - new).abs().max().item()
-    if not torch.allclose(ref, new, atol=atol):
+    rel = max_abs / (ref.abs().max().item() + 1e-12)
+    if rel > rel_tol:
         raise AssertionError(
             "split-free SigLIP-2 pooling head diverges from the original "
-            f"(max|delta|={max_abs:.3e} > atol={atol}). Refusing to patch."
+            f"(rel={rel:.3e} > rel_tol={rel_tol}, max|delta|={max_abs:.3e}). "
+            "Refusing to patch."
         )
 
     head.forward = types.MethodType(_pooling_head_forward, head)

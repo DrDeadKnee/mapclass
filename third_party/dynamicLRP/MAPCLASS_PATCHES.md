@@ -32,14 +32,34 @@ The relevance math (epsilon/sign/gamma/promise machinery) is unchanged.
 traverse), pre-extracted into leaf params (so the forward never slices a packed
 1-D bias). Verified numerically identical to the original head (fp32 Δ=0.00).
 
+## Additional patches (groundwork toward landing it on the L4)
+
+### 3. `lrp_prop_fcns.py` `DecomposedConvolutionBackwardProp` — half-precision conv
+The transpose-conv / weight-grad are done in fp32 then cast back when the saved
+tensors are bf16/fp16: bf16 `conv_transpose2d` hits `cublasLtCreate` and fp16
+underflows the ε-division at conv scale. The retained graph stays half-precision.
+
+### 4. `lrp.py` param extraction — tolerate unreached params
+When the target depends on only a sub-graph (e.g. attributing the IMAGE tower of
+a contrastive model leaves the TEXT-tower embeddings untouched), those embedding
+param nodes never get `"relevance"`. The extraction loop now skips unreached
+params instead of `KeyError`-ing, so the requested params still return. (Plus an
+`LRP_DEBUG` param-reach diagnostic.)
+
 ## Status (2026-05-23)
-Op-coverage is SOLVED: dynamicLRP traverses SigLIP-2 end-to-end. Remaining wall
-is precision/memory on the 24 GB L4:
-- **fp32**: numerically correct, but OOMs (~needs >22 GB; peaks at the ceiling).
-- **bf16**: fits memory, but the patch-conv backward's `conv_transpose2d` hits
-  `Cannot load symbol cublasLtCreate` (a bf16 cuBLASLt env issue).
-- **fp16**: fits memory, conv runs, but the relevance pass NaNs (range too small
-  for the epsilon division).
-Likely resolution: mixed precision (bf16 forward to save memory, fp32 for the
-conv-transpose / epsilon-sensitive ops), a cuBLASLt env fix for bf16, or a
-larger GPU for plain fp32.
+**Op-coverage is SOLVED**: dynamicLRP traverses SigLIP-2 end-to-end and the image
+relevance is computed. The remaining wall is the **numerical precision vs memory**
+of the relevance pass on the 24 GB L4:
+- **fp32 relevance**: numerically correct but OOMs (~21 GB working set, doesn't fit).
+- **bf16 forward + bf16 relevance**: fits easily (**peak 7.78 GB**) but the
+  relevance *vanishes* (absmax ~1e-10) — bf16 can't hold the `r/(z+ε)` relevance
+  redistribution across 27 layers.
+- **bf16 forward + fp32 relevance (blanket upcast in `detach_if_no_grad`)**:
+  correct precision but the upcast fp32 copies pile up -> OOM (~21 GB). (Tried and
+  reverted — wrong granularity.)
+
+**Precise remaining task**: surgical mixed precision — do ONLY the
+numerically-sensitive relevance steps (`s = r / (z + sign*ε)` and the relevance
+recombination) in fp32 inside each prop fcn, keeping the bulk/retained tensors in
+bf16. That keeps the ~7.8 GB footprint while restoring relevance conservation.
+Alternatives: a larger GPU (plain fp32 just works) or accept the IG baseline.

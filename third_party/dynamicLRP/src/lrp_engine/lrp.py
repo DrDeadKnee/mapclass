@@ -666,6 +666,13 @@ class LRPEngine:
             param_node_inds = []
             param_node_vals = []
             for node in param_nodes:
+                # MAPCLASS: a param/embedding node may not be reached when the
+                # target only depends on a sub-graph (e.g. attributing the image
+                # tower of a contrastive model leaves the text-tower embeddings
+                # untouched). Skip unreached params instead of KeyError-ing so
+                # the reached params (the ones we asked for) can be returned.
+                if "relevance" not in node.metadata:
+                    continue
                 param_node_inds.append(node.metadata["topo_ind"])
                 relevance = node.metadata["relevance"]
                 if isinstance(relevance, Promise):
@@ -675,6 +682,12 @@ class LRPEngine:
             for node in checkpoints:
                 node.metadata["relevance"] = None
         except KeyError as e:
+            import os as _os
+            if _os.environ.get("LRP_DEBUG"):
+                print(f"[LRP_DEBUG] param/checkpoint reach: params={len(param_nodes)} "
+                      f"reached={sum('relevance' in n.metadata for n in param_nodes)} "
+                      f"| per-param topo/has_rel="
+                      f"{[(n.metadata.get('topo_ind'), 'relevance' in n.metadata, type(n).__name__) for n in param_nodes]}")
             print(f"Some checkpoints were not reached during traversal, see metadata objects: {[ node.metadata for node in checkpoints ]}")
             return curnode, checkpoints, in_adj_list, out_adj_list, e
 
