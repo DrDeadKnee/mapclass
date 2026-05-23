@@ -290,9 +290,17 @@ def attribute(
                 # SAME object as the forward (tensor-identity invariant).
                 engine.params_to_interpret = [img_tensor]
                 _ckpt_vals, param_vals = engine.run(make_target())
+                # Select the relevance for OUR input pixel tensor. The engine may
+                # return several param relevances (a contrastive model also
+                # surfaces position/text embedding params), not necessarily with
+                # the pixel tensor first — pick the one whose shape matches
+                # img_tensor, falling back to the first.
+                _pix = [p for p in param_vals
+                        if hasattr(p, "shape") and tuple(p.shape) == tuple(img_tensor.shape)]
+                chosen = _pix[0] if _pix else param_vals[0]
                 # Detach + clone OFF the retained graph so the returned
                 # relevance does not keep the activation graph alive.
-                relevance = param_vals[0].detach().clone()
+                relevance = chosen.detach().clone()
                 target_form = form_name
                 break
             except Exception as exc:  # dimensionality / engine error → next

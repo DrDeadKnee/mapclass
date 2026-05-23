@@ -67,6 +67,7 @@ SIGLIP_MAX_LENGTH = 64
 # Per-model GCS mirror dirs (under config.GCS_MODELS_PREFIX == "models/").
 _GCS_DIRS = {
     "siglip2": config.MODEL_GCS_DIR,            # models/siglip2-so400m-patch14-384
+    "siglip2_base": "models/siglip2-base-patch16-224",
     "clip": "models/clip-vit-large-patch14",
     "vit_b16": "models/vit-base-patch16-224",
     "paligemma": "models/paligemma-3b-mix-224",
@@ -120,6 +121,29 @@ def _load_siglip2() -> Tuple[object, object]:
         .to(config.DEVICE)
         .eval()
     )
+    return model, AutoProcessor.from_pretrained(d)
+
+
+def _load_siglip2_base() -> Tuple[object, object]:
+    """SigLIP-2 base (patch16-224), loaded fp32 with the dynamicLRP-traversable
+    pooling head patched in. ~10x less relevance memory than so400m, so the LRP
+    relevance pass fits the L4 in fp32 (~3 GB). The split-free pooling head
+    (siglip_lrp_patch) is required for the engine to traverse it; it is forward-
+    identical so it is harmless for the IG path too.
+    """
+    from transformers import AutoModel, AutoProcessor
+
+    from mapclass.siglip_lrp_patch import attach_lrp_pooling_head
+
+    d = _download_model_mirror(
+        _GCS_DIRS["siglip2_base"], _local_cache_dir("siglip2_base")
+    )
+    model = (
+        AutoModel.from_pretrained(d, attn_implementation="eager")
+        .to(config.DEVICE)
+        .eval()
+    )
+    attach_lrp_pooling_head(model)
     return model, AutoProcessor.from_pretrained(d)
 
 
@@ -234,6 +258,16 @@ def _target_logits_per_image(model, output, forward_inputs):
     return output.logits_per_image[0, 0]
 
 
+def _target_siglip_cosine(model, output, forward_inputs):
+    # siglip2_base + dynamicLRP: attribute the COSINE similarity (normalized
+    # image·text), BEFORE logit_scale/logit_bias. SigLIP's logit_bias is a large
+    # additive constant that acts as an LRP relevance SINK — attributing on
+    # logits_per_image drains ~all relevance into the bias and the heatmap
+    # vanishes. The raw cosine sim is the same query-conditioned quantity and
+    # keeps relevance flowing to the pixels (verified non-vanishing on the L4).
+    return (output.image_embeds @ output.text_embeds.t())[0, 0]
+
+
 def _resolve_vit_class_id(model, query):
     """Map the free-text query -> nearest ImageNet-1k class id (documented).
 
@@ -288,6 +322,12 @@ MODEL_REGISTRY = {
         "build_inputs_fn": _build_inputs_siglip2,
         "target_fn": _target_logits_per_image,
         "patch_geom": {"patch_size": 14, "img_dim": 384, "has_cls": False},
+    },
+    "siglip2_base": {
+        "load_fn": _load_siglip2_base,
+        "build_inputs_fn": _build_inputs_siglip2,
+        "target_fn": _target_siglip_cosine,
+        "patch_geom": {"patch_size": 16, "img_dim": 224, "has_cls": False},
     },
     "clip": {
         "load_fn": _load_clip,
