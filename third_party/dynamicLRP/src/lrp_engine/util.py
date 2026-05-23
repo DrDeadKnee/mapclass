@@ -195,6 +195,15 @@ def merge_input_shapes(grad_fn):
     return out_shape
 
 def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True, bilinear=False):
+    # MAPCLASS surgical mixed precision: the epsilon-division + redistribution
+    # matmuls are numerically sensitive — in bf16 the relevance underflows and
+    # vanishes across many layers, and fp32 relevance vs bf16 saved tensors hits
+    # dtype-mismatch matmuls. Compute this core in fp32 (upcasting the saved
+    # x/w/z transiently) and return in the relevance dtype. The transient fp32
+    # copies are freed on return, so the (large) retained graph can stay bf16.
+    _odt = r.dtype
+    x = x.float(); w = w.float(); z = z.float(); r = r.float()
+
     sign = ((z == 0.).to(z) + z.sign())
 
     if bilinear:
@@ -211,8 +220,8 @@ def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: tor
         # If the operation is x @ w.T
         rin_input = x * (tmp @ w)
         rin_weight = w * (tmp.transpose(-2,-1) @ x)
-    
-    return rin_input, rin_weight
+
+    return rin_input.to(_odt), rin_weight.to(_odt)
 
 def gammma_lrp_matmul_grad(x: torch.Tensor, w: torch.Tensor, r: torch.Tensor, filter_val=1.0):
     """Analytical Linear LRP for a single (x, w, z, r) tuple"""

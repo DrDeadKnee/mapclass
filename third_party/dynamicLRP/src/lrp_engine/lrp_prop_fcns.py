@@ -957,37 +957,32 @@ class LRPPropFunctions:
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
         
-        sign = ((z == 0.).to(z) + z.sign())
-        s = r / (z + sign * epsilon)
-        output_padding = [ x.shape[i] - ((z.shape[i] - 1) * stride[i] - 2 * padding[i] + dilation[i]*(weights.shape[i] - 1) + 1) for i in range(-num_dims, 0) ]
+        # MAPCLASS surgical mixed precision: do the WHOLE sensitive path (the
+        # epsilon-division s=r/(z+eps), the transpose-conv, and the weight-grad)
+        # in fp32, upcasting the saved x/w/z transiently, and return in the
+        # relevance dtype. Reasons: (1) bf16 underflows the epsilon-division /
+        # relevance redistribution and the heatmap vanishes; (2) bf16
+        # conv_transpose2d hits "Cannot load symbol cublasLtCreate" in this env;
+        # (3) fp16 underflows here (NaN). The transient fp32 copies are freed on
+        # return, so the (large) retained activation graph stays bf16 (memory).
+        _odt = r.dtype
+        xf = x.float(); wf = weights.float(); zf = z.float(); rf = r.float()
 
-        # MAPCLASS PATCH: do this node's transpose-conv / weight-grad in fp32 even
-        # when the (large) saved activation graph is half precision. Reasons:
-        # (1) bf16 conv_transpose2d hits "Cannot load symbol cublasLtCreate" in
-        # this env; (2) fp16 underflows the epsilon-division at conv scale (NaN).
-        # Only this node's transient math is upcast — the retained graph stays
-        # half, so the memory win of running the model in bf16 is preserved.
-        _half = s.dtype in (torch.float16, torch.bfloat16)
-        _dt = s.dtype
-        s_c = s.float() if _half else s
-        w_c = weights.float() if _half else weights
-        x_c = x.float() if _half else x
+        sign = ((zf == 0.).to(zf) + zf.sign())
+        s = rf / (zf + sign * epsilon)
+        output_padding = [ xf.shape[i] - ((zf.shape[i] - 1) * stride[i] - 2 * padding[i] + dilation[i]*(wf.shape[i] - 1) + 1) for i in range(-num_dims, 0) ]
 
-        c = conv_T(s_c, w_c, None, stride, padding, output_padding, groups, dilation)
+        c = conv_T(s, wf, None, stride, padding, output_padding, groups, dilation)
 
-        if c.shape != x_c.shape:
+        if c.shape != xf.shape:
             # Assume c is larger due to padding, center-crop down to input H, W
-            _, _, H, W = x_c.shape
+            _, _, H, W = xf.shape
             c = c[:, :, :H, :W]
 
-        r_input = x_c * c
-        if _half:
-            r_input = r_input.to(_dt)
+        r_input = (xf * c).to(_odt)
 
-        grad_w = grad_W_fcn(x_c, weights.shape, s_c, stride, padding, dilation, groups)
-        r_weight = w_c * grad_w  # elementwise, scales by weight itself
-        if _half:
-            r_weight = r_weight.to(_dt)
+        grad_w = grad_W_fcn(xf, wf.shape, s, stride, padding, dilation, groups)
+        r_weight = (wf * grad_w).to(_odt)  # elementwise, scales by weight itself
 
         return relevance_filter(r_input, filter_val), r_weight, 0.0
     

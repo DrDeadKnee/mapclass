@@ -58,8 +58,26 @@ of the relevance pass on the 24 GB L4:
   correct precision but the upcast fp32 copies pile up -> OOM (~21 GB). (Tried and
   reverted — wrong granularity.)
 
-**Precise remaining task**: surgical mixed precision — do ONLY the
-numerically-sensitive relevance steps (`s = r / (z + sign*ε)` and the relevance
-recombination) in fp32 inside each prop fcn, keeping the bulk/retained tensors in
-bf16. That keeps the ~7.8 GB footprint while restoring relevance conservation.
-Alternatives: a larger GPU (plain fp32 just works) or accept the IG baseline.
+### 5. Surgical mixed precision (`util.py` epsilon_lrp_matmul + `lrp_prop_fcns.py` conv)
+The numerically-sensitive relevance core (`s = r/(z+ε·sign)` + the redistribution
+matmuls / transpose-conv) is computed in fp32 — upcasting the saved bf16 x/w/z
+transiently — and returned in the relevance dtype. No-op for fp32 models (ViT
+unaffected). Lets the model FORWARD run in bf16 (small graph) while the relevance
+math is fp32-accurate.
+
+## VERDICT (2026-05-23): so400m fp32 LRP does NOT fit the 24 GB L4
+Exhaustively tested on a clean L4. The relevance pass must be STORED in fp32 or it
+breaks; fp32 storage of so400m's relevance (729 tokens × 27 layers × 1152 dim)
+peaks **>22 GB** even with the forward graph in bf16. Storage-precision results:
+- **bf16 store** (compute fp32): fits (7.78 GB) but relevance VANISHES (~1e-6,
+  0.3% nonzero) — 7-bit mantissa rounds the distributed small relevance to 0.
+- **fp16 store** (compute fp32): NaNs (range too small).
+- **fp32 store**: numerically correct but OOMs (>22 GB). `no_recompile` and
+  `relevance_filter` do NOT reduce this peak.
+
+**Op-coverage + numerics are SOLVED; this is purely a VRAM ceiling.** Paths to a
+real so400m heatmap: (a) a bigger GPU — A100 40 GB runs fp32 comfortably (not
+available in northamerica-northeast1; needs another region); (b) a smaller
+SigLIP-2 variant (e.g. `siglip2-base-patch16-224`, ~10× less relevance memory)
+fits the L4 in fp32 with these exact patches — same architecture, same MAP-pool
+head fix. The IG baseline remains the meanwhile option.
