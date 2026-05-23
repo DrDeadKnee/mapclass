@@ -24,6 +24,24 @@ fails, this loop must work.
 - **Model size**: SigLIP-2-so400m is the chosen size; dynamic LRP fidelity/overhead degrades with larger models, so this is a deliberate ceiling
 <!-- GSD:project-end -->
 
+## Hardware (HARD CONSTRAINT — measured 2026-05-23)
+
+This is the actual VM and the binding limit on every plan. **Treat the GPU VRAM
+ceiling as a hard constraint: only ONE model is held in VRAM at a time.**
+
+| Resource | Spec | Implication |
+|----------|------|-------------|
+| GPU | 1× **NVIDIA L4 — 23.66 GB total VRAM** (~22.5 GB usable at rest), driver 580.126.20 | The binding limit. The dynamic-LRP relevance pass retains the full forward-activation graph, so peak VRAM ≫ plain inference (ViT-b-16 already peaks **~19.3 GB**). Load + attribute **one** model, free it, then the next. |
+| CUDA | build **12.6** (torch `2.7.1+cu126`, transformers `4.52.3`) | Matches the pinned stack — do not change. |
+| CPU | 16 vCPU (Intel Xeon @ 2.20 GHz, 8c×2t) | Not a bottleneck. |
+| RAM | 62 GB | Not a bottleneck; safe to offload a model to CPU between runs. |
+| Disk | 96 GB total, **~24 GB free** | Tight. Each mirrored model dir competes for this — don't mirror models you won't run. |
+
+**Hard rules that follow from the L4:**
+- One model resident in VRAM at any moment. Free (`model.to("cpu")` → `del` → `gc.collect()` → `torch.cuda.empty_cache()`) before loading the next.
+- A ~3B model (PaliGemma) may load on an empty GPU but its relevance pass can still OOM — that is a recorded result, not a bug to engineer around.
+- The vendored dynamicLRP engine orphans retained graph on its failure path (VENDOR_SHA frozen, do not patch); never call a known-failing model in a tight loop.
+
 <!-- GSD:stack-start source:research/STACK.md -->
 ## Technology Stack
 

@@ -25,27 +25,31 @@ See: .planning/PROJECT.md (updated 2026-05-19)
 ## Current Position
 
 Phase: 1 of 1 (Multi-Model × Multi-Map Attribution Notebook)
-Plan: — (not yet planned)
-Status: Ready to plan
-Last activity: 2026-05-19 - Completed quick task 260519-2v4: multi-model × last-50-maps dynamic-LRP notebook (ViT works 19/50; SigLIP-2/CLIP/PaliGemma recorded no-coverage/OOM)
+Plan: — (GSD planning dropped per user, 2026-05-23)
+Status: Working hands-on (no GSD loop) — see Session Continuity
+Last activity: 2026-05-23 - Dropped GSD; built notebooks/03_single_model.ipynb (load image → run chosen model → heatmap; configurable MODEL_NAME/MAP_INDEX/QUERY); verified headless exit 0 (vit_b16, peak 1.66 GB)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: deliverable shipped via quick task + 03_single_model notebook
 
 ### Resume
 
-Roadmap was deliberately collapsed from 5 phases to 1 at the user's request.
-Scope: ONE notebook running 4 models (SigLIP-2, CLIP, ViT-b-16, PaliGemma-3B)
-against the last 50 Rumsey manifest maps, dynamic-LRP attribution overlays,
-failures as captioned "no heatmap" tiles, headless exit 0. Models from
-`gs://mapclass-training-northeast1/models/` (SigLIP-2 mirrored; PaliGemma
-ALREADY at `models/paligemma-3b-mix-224/` — NOT gated, full code+weights there;
-CLIP + ViT-b-16 to be mirrored). Maps from `gs://.../data/` (1,544 mirrored in
-v1.0; use manifest[-50:]). Reuse v1.0 code (loaders, attribution, overlay,
-mirror_model) — generalize with PLAIN per-model functions; NO adapter Protocol /
-PatchGeometry dataclass / conformance-test or pre-flight-guard scaffold (user
-called that over-complicated and it is now Out of Scope). Coverage gaps stay
-recorded results; VENDOR_SHA + frozen pins untouched. 7 reqs (MODEL-01..02,
-ATTR-01..02, NB-01..03) all map to Phase 1. Next: `/gsd-plan-phase 1`.
+**WORKING MODE CHANGED (2026-05-23):** User dropped the GSD workflow for this
+project (commit 879b480: "the gsd approach is just not working ... back to basic
+claude code with active engagement from my end"). `.planning/` is now a RECORD,
+not a driver. Do NOT route to `/gsd-*` commands or agents unless the user asks.
+Edit notebooks/code directly; the `.ipynb` is the source of truth.
+
+**Where things stand:** The v1.1 deliverable (multi-model dynamic-LRP over maps)
+was already built two ways: `notebooks/02_multimodel.ipynb` (4 models × last-50
+maps loop, hand-edited by user) and the new `notebooks/03_single_model.ipynb`
+(pick ONE map + ONE model, easily configurable — the hands-on flow the user
+asked for). Hardware is now a hard constraint documented in CLAUDE.md (single
+NVIDIA L4, ~22.5 GB usable VRAM, one model in VRAM at a time).
+
+**Verified result:** vit_b16 produces real heatmaps (single run peaks only
+~1.66 GB — far below the leaky 50-map loop's ~19 GB). SigLIP-2/CLIP op-coverage
+gaps and PaliGemma OOM remain recorded results (Fallback Ladder declined).
+VENDOR_SHA + frozen pins untouched.
 
 ## Performance Metrics
 
