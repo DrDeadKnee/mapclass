@@ -1,5 +1,0 @@
-docs:
-  - path: README.md
-    type: SPEC
-  - path: notes/architectural_references.md
-    type: DOC
