@@ -186,3 +186,41 @@ class TestSaveRegion:
         meta = json.loads((tmp_path / "testregion_res6.meta.json").read_text())
         assert meta["n_cells"] == 2
         assert meta["composite_classes"] == COMPOSITE_NAMES
+
+
+# ---------------------------------------------------------------------------
+# region selection (select_regions.spaced_pick)
+# ---------------------------------------------------------------------------
+
+from hexprior.select_regions import spaced_pick
+
+
+def _region(lon: int, lat: int, score: float) -> dict:
+    return {
+        "region_id": f"wc_{lat:+03d}_{lon:+04d}",
+        "bbox": [float(lon), float(lat), float(lon + 1), float(lat + 1)],
+        "diversity_score": score,
+    }
+
+
+class TestSpacedPick:
+    def test_enforces_min_spacing(self):
+        # Three adjacent cells: only the first and third are >= 3 deg apart.
+        ranked = [_region(30, 0, 5.0), _region(31, 0, 4.9), _region(34, 0, 4.8)]
+        picked = spaced_pick(ranked, n=3, min_spacing_deg=3.0)
+        assert [r["region_id"] for r in picked] == ["wc_+00_+030", "wc_+00_+034"]
+
+    def test_exclusion_bbox_skips_cells(self):
+        ranked = [_region(-9, 38, 5.0), _region(20, 10, 4.0)]
+        picked = spaced_pick(ranked, n=2, exclude_bboxes=[(-10.0, 36.0, 3.0, 44.0)])
+        assert [r["region_id"] for r in picked] == ["wc_+10_+020"]
+
+    def test_preserves_ranking_order_and_stops_at_n(self):
+        ranked = [_region(0, 0, 5.0), _region(50, 0, 4.0), _region(100, 0, 3.0)]
+        picked = spaced_pick(ranked, n=2, min_spacing_deg=3.0)
+        assert [r["diversity_score"] for r in picked] == [5.0, 4.0]
+
+    def test_no_constraints_returns_top_n(self):
+        ranked = [_region(i * 10, 0, 5.0 - i) for i in range(5)]
+        picked = spaced_pick(ranked, n=5, min_spacing_deg=0.0)
+        assert len(picked) == 5
