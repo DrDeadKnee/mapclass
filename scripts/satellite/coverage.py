@@ -155,7 +155,9 @@ def build_summary(
                 if sum(counts.values()) == 0:
                     continue  # all-ocean / nodata cell
                 cells.append({
-                    "lat": int(lat_sw + dlat),
+                    # Raster row 0 is the NORTHERN edge of the tile, so row
+                    # block dlat=0 is the 1° strip at lat_sw + 2, not lat_sw.
+                    "lat": int(lat_sw + (2 - dlat)),
                     "lon": int(lon_sw + dlon),
                     "counts": [counts[c] for c in range(_N_CLASSES)],
                 })

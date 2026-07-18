@@ -146,6 +146,10 @@ def fetch_worldcover(
                     resampling=Resampling.nearest,
                     src_nodata=0,
                     dst_nodata=NODATA,
+                    # dst is pre-initialised to NODATA once; without this,
+                    # every reproject() re-inits the WHOLE destination and
+                    # each tile wipes the previously mosaicked ones.
+                    init_dest_nodata=False,
                 )
         except Exception as exc:
             print(f"  Warning: could not read WorldCover tile {tile_id}: {exc}")

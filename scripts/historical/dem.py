@@ -165,6 +165,10 @@ def fetch_topo(
             resampling=Resampling.bilinear,
             src_nodata=np.nan,
             dst_nodata=np.nan,
+            # dem_intermediate is pre-initialised to NaN once; without this,
+            # every reproject() re-inits the WHOLE destination and each DEM
+            # tile wipes the previously mosaicked ones.
+            init_dest_nodata=False,
         )
         tile_ds.close()
 
