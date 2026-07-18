@@ -12,4 +12,4 @@ matplotlib  # notebooks — dataset visualization
 jupyterlab  # notebook server for dataset inspection
 ipykernel   # registers the .venv kernel for Jupyter
 nbconvert   # headless notebook execution / output stripping
-# torch — reintroduce with the masked-hex prior model (not needed by data pipeline)
+torch>=2.2  # masked-hex prior model (scripts/hexprior/); CPU wheel suffices for tests
