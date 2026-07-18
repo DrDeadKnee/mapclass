@@ -3,17 +3,13 @@ numpy
 rasterio
 pyproj
 requests
-gcsfs  # GCS-canonical persistence (scripts/gcs_io.py + all build_*_dataset.py pipelines)
-torch
-transformers>=5.8  # 5.x layout: PaliGemma submodules at .model.vision_tower (not .vision_tower)
-peft>=0.10
-accelerate
-bitsandbytes
+gcsfs  # GCS-canonical persistence (scripts/gcs_io.py)
+h3>=4  # H3 hex grid for the terrain prior dataset (scripts/hexprior/)
 pystac-client>=0.9
 pytest>=8
 pytest-mock>=3
-timm>=1.0.27
-matplotlib  # notebooks/inspect_datasets.ipynb — dataset visualization
+matplotlib  # notebooks — dataset visualization
 jupyterlab  # notebook server for dataset inspection
 ipykernel   # registers the .venv kernel for Jupyter
 nbconvert   # headless notebook execution / output stripping
+# torch — reintroduce with the masked-hex prior model (not needed by data pipeline)

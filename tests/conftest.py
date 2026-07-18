@@ -1,36 +1,22 @@
 """
-Shared offline fixtures for the Phase 2 and Phase 3 test suites.
+Shared offline fixtures for the test suite.
 
 Every fixture here is fully offline: no network, no S3, no live API. Fixtures
 that touch the filesystem write only under pytest's ``tmp_path``.
 
-Fixture inventory (consumed by downstream plans 02-02 … 02-05 and 03-01 … 03-05):
+Fixture inventory:
   - sample_luna_item          — a David Rumsey LUNA result dict
   - sample_allmaps_annotation — a single W3C Web-Annotation matching
                                 ``allmaps._parse_annotation``'s expected shape
-
-  GCS I/O fixtures (02-01 Wave 0 — added for gcs_io module testing):
-  - local_fs                  — fsspec.filesystem("file") for offline _GCSWriter tests
-  - mock_gcs_module           — a module-level mock providing _MockGCSFileSystem
-                                (in-memory _store: dict[str, bytes]) for patching
-                                gcs_io.gcsfs in unit tests.  Mirrors the
-                                _MockGCSModule pattern from tests/test_seg_gcs.py.
   - sample_allmaps_multi      — an ``items`` list of >=3 distinct annotations
-                                (a multi-canvas atlas) for the Task 2 lookup fix
+                                (a multi-canvas atlas)
   - tiny_geotiff              — a 256x256 3-band uint8 EPSG:4326 GeoTIFF path
   - sample_azgaar_geojson     — a minimal Azgaar FeatureCollection path
   - mock_stac_item            — an offline stand-in for a pystac Item
-
-  Phase 3 additions (03-01 Wave 0 — offline, Pillow + tiling only):
-  - mini_pyramid              — a real Phase-2 21-tile pyramid produced by
-                                tiling.tile(); returns the pyramid directory path
-                                (the dir containing pyramid.json).  Fully offline:
-                                Pillow writes PNGs; tiling.tile() emits the manifest.
-                                No torch / transformers / timm imports.
-  - stub_vision_config        — a minimal namespace object exposing hidden_size,
-                                patch_size, num_hidden_layers for offline shape
-                                tests where the real PaliGemma checkpoint is absent
-                                (RESEARCH Assumption A1 / Environment Availability).
+  - local_fs                  — fsspec.filesystem("file") for offline _GCSWriter tests
+  - mock_gcs_module           — a module-level mock providing _MockGCSFileSystem
+                                (in-memory _store: dict[str, bytes]) for patching
+                                gcs_io.gcsfs in unit tests
 """
 
 import json
@@ -270,122 +256,7 @@ def mock_stac_item():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 seg fixtures (03-01 Wave 0)
-# ---------------------------------------------------------------------------
-
-import json as _json
-from pathlib import Path as _Path
-from PIL import Image as _Image
-import types as _types
-
-
-_SEG_WEIGHTS_BLOB = _json.dumps(
-    {
-        # All 9 LANDCOVER_CLASSES must be present (T-04-01 / build_lc_weight_tensor
-        # validation).  Weights reflect the Phase-4 synthetic-source defaults:
-        # satellite-only classes (cropland, built_up, flooded_wetland) set to 0.0
-        # so the fixture never requires those labels; all others uniform at 1.0.
-        "land_cover_weights": {
-            "water":           1.0,
-            "trees":           0.3,   # downweighted: historical stale
-            "shrubland":       1.0,
-            "grassland":       1.0,
-            "cropland":        0.15,  # satellite-only
-            "built_up":        0.15,  # satellite-only
-            "bare_sparse":     1.0,
-            "flooded_wetland": 0.15,  # satellite-only
-            "snow_ice":        1.0,
-        },
-        "topography_weight": 1.0,
-        "source": "synthetic",
-        "map_file": "fixture",
-    },
-    indent=2,
-)
-
-# Source size chosen so that enumerate_pyramids emits at least one full
-# 21-tile pyramid (896x896 fully on-map).  1792x1792 gives a 4x4 grid of
-# pyramid origins on the stride-448 grid — 16 pyramids total; the first
-# (origin 0,0) is 100% on-map.  Mirrors test_tiling.py::FULL_W/FULL_H.
-_SEG_MAP_W = _SEG_MAP_H = 896 + 2 * 448  # 1792
-
-
-def _make_seg_map_dir(base: _Path, width: int = _SEG_MAP_W, height: int = _SEG_MAP_H) -> _Path:
-    """
-    Write a complete per-map dir (image/lc/topo PNG + sample_weights.json).
-    Mirrors tests/test_tiling.py::_make_map_dir exactly.
-    No torch / transformers / timm dependencies.
-    """
-    base.mkdir(parents=True, exist_ok=True)
-    _Image.new("RGB", (width, height), (10, 20, 30)).save(base / "image.png")
-    _Image.new("L", (width, height), 1).save(base / "land_cover.png")
-    _Image.new("L", (width, height), 2).save(base / "topography.png")
-    (base / "sample_weights.json").write_text(_SEG_WEIGHTS_BLOB)
-    return base
-
-
-@pytest.fixture
-def mini_pyramid(tmp_path):
-    """
-    A real Phase-2 21-tile pyramid produced by the live ``tiling.tile()``
-    producer (D-04: never hand-write geometry — let the Phase-2 producer emit
-    it).
-
-    Synthesises a 1792x1792 map under ``tmp_path`` (RGB ``image.png``,
-    L-mode ``land_cover.png`` + ``topography.png``, ``sample_weights.json``),
-    then calls ``tiling.tile(map_dir)`` to produce the pyramid tree.
-
-    Returns the first pyramid directory (the directory containing
-    ``pyramid.json`` for the origin-0,0 pyramid), following the conftest
-    ``tiny_geotiff`` return-path idiom.
-
-    Fully offline: Pillow + tiling only; no torch / transformers / timm
-    imports so the fixture works even when those packages are absent.
-
-    Covered decisions: D-03, D-04, D-06a (construction-only smoke tests).
-    """
-    from tiling import tile
-
-    map_dir = _make_seg_map_dir(tmp_path / "map")
-    pyramid_root = tile(map_dir)
-
-    # Pick the first (alphabetically lowest) pyramid dir.  The origin-0,0
-    # pyramid is always present for a 1792x1792 source (fully on-map).
-    pyramid_dirs = sorted(p for p in pyramid_root.iterdir() if p.is_dir())
-    assert pyramid_dirs, "tiling.tile() produced no pyramid directories"
-    # Sanity: the chosen dir must have a pyramid.json with 21 tiles.
-    manifest = _json.loads((pyramid_dirs[0] / "pyramid.json").read_text())
-    assert len(manifest["tiles"]) == 21, (
-        f"Expected 21 tiles in mini_pyramid, got {len(manifest['tiles'])}"
-    )
-    return pyramid_dirs[0]
-
-
-@pytest.fixture
-def stub_vision_config():
-    """
-    A minimal namespace object exposing ``hidden_size``, ``patch_size``, and
-    ``num_hidden_layers`` for offline shape tests where the real PaliGemma
-    checkpoint is unavailable.
-
-    Values match the SigLIP-So400m/14 config used by ``paligemma-3b-pt-224``
-    (RESEARCH Assumption A1: hidden_size 1152, patch 14, 27 layers, no CLS).
-    Tests that depend on this fixture skip gracefully when the real model is
-    absent; the stub provides the numeric contracts so decoder/backbone shape
-    assertions can be made without loading 3 B parameters.
-    """
-    cfg = _types.SimpleNamespace()
-    cfg.hidden_size = 1152        # SigLIP-So400m/14 hidden dim
-    cfg.patch_size = 14           # SigLIP-So400m/14 patch size
-    cfg.num_hidden_layers = 27    # SigLIP-So400m/14 transformer depth
-    cfg.image_size = 224          # native input resolution
-    cfg.num_channels = 3          # RGB
-    return cfg
-
-
-# ---------------------------------------------------------------------------
-# GCS I/O fixtures (02-01 Wave 0)
-# Mirrors the _MockGCSModule pattern from tests/test_seg_gcs.py lines 76-121.
+# GCS I/O fixtures
 # ---------------------------------------------------------------------------
 
 import io as _io
